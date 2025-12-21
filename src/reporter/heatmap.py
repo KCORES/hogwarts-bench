@@ -116,8 +116,8 @@ def _to_fullscreen_html(fig: go.Figure, div_id: str) -> str:
         }}
         #{div_id} {{
             width: 100vw;
-            height: 50vh;
-            min-height: 800px;
+            height: 100vh;
+            min-height: 1000px;
         }}
         .plotly-graph-div {{
             width: 100% !important;
@@ -1051,10 +1051,11 @@ def create_combined_depth_heatmap(
     result_metadata: Optional[DatasetMetadata] = None
 ) -> str:
     """
-    Create a combined heatmap showing coverage (1D) and depth accuracy (2D) aligned.
+    Create a combined heatmap showing coverage (1D), depth accuracy (2D), and average accuracy (1D).
     
     Top: Question coverage across context positions (1D heatmap)
-    Bottom: Depth-aware accuracy (2D heatmap, X=context length, Y=depth)
+    Middle: Depth-aware accuracy (2D heatmap, X=context length, Y=depth)
+    Bottom: Average accuracy per context length (1D heatmap, column means of depth heatmap)
     
     Args:
         coverage_bins: List of BinStats with coverage values
@@ -1069,13 +1070,13 @@ def create_combined_depth_heatmap(
     if not coverage_bins and not depth_bins:
         return "<div>No data to visualize</div>"
     
-    # Create subplots: coverage on top, depth heatmap on bottom
+    # Create subplots: coverage on top, depth heatmap in middle, average at bottom
     fig = make_subplots(
-        rows=2, cols=1,
+        rows=3, cols=1,
         shared_xaxes=False,
-        vertical_spacing=0.3,
-        subplot_titles=('Question Coverage Across Context', 'Depth-Aware Accuracy'),
-        row_heights=[0.15, 0.85]
+        vertical_spacing=0.16,
+        subplot_titles=('Question Coverage Across Context', 'Depth-Aware Accuracy', 'Average Accuracy by Context Length'),
+        row_heights=[0.12, 0.76, 0.12]
     )
     
     # === Top: Coverage heatmap (1D) ===
@@ -1098,8 +1099,8 @@ def create_combined_depth_heatmap(
                 colorbar=dict(
                     title=dict(text='Coverage', side='right'),
                     x=1.02,
-                    y=0.95,
-                    len=0.15
+                    y=0.94,
+                    len=0.1
                 ),
                 hovertemplate='%{text}<extra></extra>',
                 text=coverage_hover
@@ -1107,7 +1108,11 @@ def create_combined_depth_heatmap(
             row=1, col=1
         )
     
-    # === Bottom: Depth heatmap (2D) with text annotations ===
+    # === Middle: Depth heatmap (2D) with text annotations ===
+    depth_x_labels = []
+    depth_context_lengths = []
+    column_averages = []  # Store column averages for the bottom heatmap
+    
     if depth_bins:
         # Extract unique context lengths and depth labels
         depth_context_lengths = sorted(set(b.context_length for b in depth_bins))
@@ -1154,6 +1159,18 @@ def create_combined_depth_heatmap(
         depth_x_labels = [f"{ctx//1000}K" for ctx in depth_context_lengths]
         depth_y_labels = list(reversed(depth_labels))
         
+        # Calculate column averages (mean of each context length across all depths)
+        for col_idx in range(len(depth_context_lengths)):
+            col_values = []
+            for row_idx in range(len(depth_labels)):
+                val = z_values[row_idx][col_idx]
+                if val >= 0:  # Exclude no-data markers (-0.05)
+                    col_values.append(val)
+            if col_values:
+                column_averages.append(sum(col_values) / len(col_values))
+            else:
+                column_averages.append(-0.05)  # No data marker
+        
         # Custom colorscale for accuracy
         colorscale = [
             [0.0, '#6c757d'],
@@ -1175,8 +1192,8 @@ def create_combined_depth_heatmap(
                 colorbar=dict(
                     title=dict(text='Accuracy', side='right'),
                     x=1.02,
-                    y=0.35,
-                    len=0.55,
+                    y=0.5,
+                    len=0.6,
                     yanchor='middle',
                     tickvals=[0, 0.25, 0.5, 0.75, 1.0],
                     ticktext=['0%', '25%', '50%', '75%', '100%']
@@ -1201,6 +1218,52 @@ def create_combined_depth_heatmap(
                         xref='x2',
                         yref='y2'
                     )
+    
+    # === Bottom: Average accuracy heatmap (1D) ===
+    if depth_bins and column_averages:
+        avg_hover = [[
+            f"Context: {ctx//1000}K<br>"
+            f"Avg Accuracy: {avg:.2%}"
+            if avg >= 0 else
+            f"Context: {ctx//1000}K<br>"
+            f"No data"
+            for ctx, avg in zip(depth_context_lengths, column_averages)
+        ]]
+        
+        # Text annotations for average row
+        avg_text_annotations = [
+            f"{avg:.0%}" if avg >= 0 else ""
+            for avg in column_averages
+        ]
+        
+        fig.add_trace(
+            go.Heatmap(
+                z=[column_averages],
+                x=depth_x_labels,
+                y=['Avg'],
+                colorscale=colorscale,
+                zmin=-0.05,
+                zmax=1.0,
+                showscale=False,  # Share colorbar with depth heatmap
+                hovertemplate='%{text}<extra></extra>',
+                text=avg_hover
+            ),
+            row=3, col=1
+        )
+        
+        # Add text annotations for average heatmap
+        for j, ctx_label in enumerate(depth_x_labels):
+            cell_text = avg_text_annotations[j]
+            if cell_text:
+                fig.add_annotation(
+                    x=ctx_label,
+                    y='Avg',
+                    text=cell_text,
+                    showarrow=False,
+                    font=dict(color='white', size=12, family='Arial Black'),
+                    xref='x3',
+                    yref='y3'
+                )
     
     # Build subtitle with metadata
     subtitle_parts = []
@@ -1234,9 +1297,11 @@ def create_combined_depth_heatmap(
     
     # Update axes
     fig.update_xaxes(title_text='Token Position', tickangle=45, row=1, col=1)
-    fig.update_xaxes(title_text='Context Length', row=2, col=1)
+    fig.update_xaxes(title_text='', row=2, col=1)  # No title for middle
+    fig.update_xaxes(title_text='Context Length', row=3, col=1)
     fig.update_yaxes(showticklabels=False, row=1, col=1)
     fig.update_yaxes(title_text='Evidence Depth', row=2, col=1)
+    fig.update_yaxes(showticklabels=False, row=3, col=1)
     
     # Add branding (logo)
     _add_branding(fig, height=700, width=1200)
