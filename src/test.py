@@ -17,6 +17,7 @@ from .core.config import Config
 from .core.llm_client import LLMClient
 from .tester.testing_tool import TestingTool
 from .tester.question_checker import QuestionCheckError
+from .tester.depth_scheduler import DepthMode
 
 
 # Configure logging
@@ -34,14 +35,19 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Test with 50k token context
+  # Test with 50k token context (legacy mode)
   python -m src.test --novel data/novel.txt --data_set data/questions.jsonl \\
       --context_length 50000 --output data/results.jsonl
   
-  # Test with custom padding and concurrency
+  # Depth-aware testing with uniform distribution
   python -m src.test --novel data/novel.txt --data_set data/questions.jsonl \\
-      --context_length 100000 --padding_size 1000 \\
-      --concurrency 10 --output data/results.jsonl
+      --depth-mode uniform --context-lengths 64000,128000,200000 \\
+      --output data/results_depth.jsonl
+  
+  # Depth-aware testing with fixed depth (50%)
+  python -m src.test --novel data/novel.txt --data_set data/questions.jsonl \\
+      --depth-mode fixed --depth 0.5 --context-lengths 128000 \\
+      --output data/results_fixed.jsonl
         """
     )
     
@@ -63,8 +69,31 @@ Examples:
     parser.add_argument(
         '--context_length',
         type=int,
-        required=True,
-        help='Number of tokens to use as context for testing'
+        default=None,
+        help='Number of tokens to use as context (required for legacy mode)'
+    )
+    
+    # Depth-aware testing arguments
+    parser.add_argument(
+        '--depth-mode',
+        type=str,
+        choices=['legacy', 'uniform', 'fixed'],
+        default='legacy',
+        help='Depth testing mode: legacy (default), uniform, or fixed'
+    )
+    
+    parser.add_argument(
+        '--depth',
+        type=float,
+        default=None,
+        help='Fixed depth value (0.0-1.0) for fixed mode'
+    )
+    
+    parser.add_argument(
+        '--context-lengths',
+        type=str,
+        default=None,
+        help='Comma-separated context lengths for depth-aware testing (e.g., 64000,128000,200000)'
     )
     
     # Optional arguments
@@ -134,9 +163,37 @@ def validate_args(args):
     if not Path(args.data_set).exists():
         raise ValueError(f"Question set file not found: {args.data_set}")
     
-    # Validate numeric arguments
-    if args.context_length <= 0:
-        raise ValueError("context_length must be positive")
+    # Validate depth mode and related arguments
+    depth_mode = args.depth_mode
+    
+    if depth_mode == 'legacy':
+        # Legacy mode requires context_length
+        if args.context_length is None:
+            raise ValueError("--context_length is required for legacy mode")
+        if args.context_length <= 0:
+            raise ValueError("context_length must be positive")
+    else:
+        # Depth-aware modes require context-lengths
+        if args.context_lengths is None:
+            raise ValueError(f"--context-lengths is required for {depth_mode} mode")
+        
+        # Parse and validate context lengths
+        try:
+            context_lengths = [int(x.strip()) for x in args.context_lengths.split(',')]
+            if not context_lengths:
+                raise ValueError("--context-lengths cannot be empty")
+            for length in context_lengths:
+                if length <= 0:
+                    raise ValueError(f"Invalid context length: {length}")
+        except ValueError as e:
+            raise ValueError(f"Invalid --context-lengths format: {e}")
+        
+        # Fixed mode requires depth
+        if depth_mode == 'fixed':
+            if args.depth is None:
+                raise ValueError("--depth is required for fixed mode")
+            if not 0.0 <= args.depth <= 1.0:
+                raise ValueError("--depth must be between 0.0 and 1.0")
     
     if args.padding_size < 0:
         raise ValueError("padding_size must be non-negative")
@@ -191,7 +248,14 @@ async def main():
         logger.info("Testing Parameters:")
         logger.info(f"  Novel: {args.novel}")
         logger.info(f"  Question set: {args.data_set}")
-        logger.info(f"  Context length: {args.context_length} tokens")
+        logger.info(f"  Depth mode: {args.depth_mode}")
+        if args.depth_mode == 'legacy':
+            logger.info(f"  Context length: {args.context_length} tokens")
+        else:
+            context_lengths = [int(x.strip()) for x in args.context_lengths.split(',')]
+            logger.info(f"  Context lengths: {context_lengths}")
+            if args.depth_mode == 'fixed':
+                logger.info(f"  Fixed depth: {args.depth}")
         logger.info(f"  Padding size: {args.padding_size} tokens")
         logger.info(f"  Concurrency: {args.concurrency}")
         logger.info(f"  Skip validation: {args.skip_validation}")
@@ -199,18 +263,36 @@ async def main():
         logger.info(f"  Output: {args.output}")
         logger.info("=" * 60)
         
-        # Run tests
+        # Run tests based on mode
         logger.info("Starting test execution...")
-        results = await testing_tool.run_tests(
-            novel_path=args.novel,
-            question_set_path=args.data_set,
-            context_length=args.context_length,
-            padding_size=args.padding_size,
-            concurrency=args.concurrency,
-            output_path=args.output,
-            skip_validation=args.skip_validation,
-            ignore_invalid=args.ignore_invalid
-        )
+        
+        if args.depth_mode == 'legacy':
+            # Legacy mode - use original run_tests
+            results = await testing_tool.run_tests(
+                novel_path=args.novel,
+                question_set_path=args.data_set,
+                context_length=args.context_length,
+                padding_size=args.padding_size,
+                concurrency=args.concurrency,
+                output_path=args.output,
+                skip_validation=args.skip_validation,
+                ignore_invalid=args.ignore_invalid
+            )
+        else:
+            # Depth-aware mode
+            context_lengths = [int(x.strip()) for x in args.context_lengths.split(',')]
+            results = await testing_tool.run_depth_aware_tests(
+                novel_path=args.novel,
+                question_set_path=args.data_set,
+                depth_mode=args.depth_mode,
+                context_lengths=context_lengths,
+                fixed_depth=args.depth,
+                padding_size=args.padding_size,
+                concurrency=args.concurrency,
+                output_path=args.output,
+                skip_validation=args.skip_validation,
+                ignore_invalid=args.ignore_invalid
+            )
         
         # Display summary statistics
         logger.info("=" * 60)

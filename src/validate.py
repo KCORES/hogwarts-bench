@@ -149,12 +149,34 @@ def save_results(
     novel_path: str,
     questions_path: str,
     stats: Dict[str, Any],
-    valid_only: bool
+    valid_only: bool,
+    original_metadata: Dict[str, Any],
+    llm_config: Dict[str, Any],
+    validation_config: Dict[str, Any]
 ):
-    """Save validation results to JSONL file."""
-    # Build metadata
-    metadata = {
-        "validated_at": datetime.now().isoformat(),
+    """Save validation results to JSONL file.
+    
+    Args:
+        results: List of validation results
+        output_path: Output file path
+        novel_path: Path to novel file
+        questions_path: Path to questions file
+        stats: Validation statistics
+        valid_only: Whether to output only valid questions
+        original_metadata: Original metadata from questions file
+        llm_config: LLM configuration used for validation
+        validation_config: Validation parameters
+    """
+    # Build metadata - preserve original and add validation info
+    metadata = {}
+    
+    # Preserve all original metadata
+    if original_metadata:
+        metadata.update(original_metadata)
+    
+    # Add validation metadata
+    metadata["validated_at"] = datetime.now().isoformat()
+    metadata["validation"] = {
         "novel_path": novel_path,
         "questions_path": questions_path,
         "total_questions": stats["total"],
@@ -162,6 +184,20 @@ def save_results(
         "failed": stats["failed"],
         "pass_rate": stats["pass_rate"],
         "valid_only": valid_only,
+        "model_name": llm_config.get("model_name"),
+        "config": {
+            "confidence_threshold": validation_config.get("confidence_threshold"),
+            "similarity_threshold": validation_config.get("similarity_threshold"),
+            "temperature": llm_config.get("temperature"),
+            "max_tokens": llm_config.get("max_tokens"),
+            "timeout": llm_config.get("timeout"),
+        },
+        "failure_breakdown": {
+            "answer_mismatch": stats["answer_mismatch"],
+            "evidence_not_found": stats["evidence_not_found"],
+            "not_answerable": stats["not_answerable"],
+            "low_confidence": stats["low_confidence"],
+        }
     }
     
     # Convert results to dictionaries
@@ -262,7 +298,13 @@ async def main():
             novel_path=args.novel,
             questions_path=args.questions,
             stats=stats,
-            valid_only=args.valid_only
+            valid_only=args.valid_only,
+            original_metadata=metadata,
+            llm_config=llm_config,
+            validation_config={
+                "confidence_threshold": args.confidence_threshold,
+                "similarity_threshold": args.similarity_threshold,
+            }
         )
         
         # Display summary

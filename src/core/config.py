@@ -29,6 +29,8 @@ class Config:
             "base_url": os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
             "model_name": os.getenv("MODEL_NAME", ""),
             "temperature": float(os.getenv("DEFAULT_TEMPERATURE", "0.7")),
+            "top_p": float(os.getenv("DEFAULT_TOP_P", "1.0")),
+            "top_k": int(os.getenv("DEFAULT_TOP_K", "0")),
             "max_tokens": int(os.getenv("DEFAULT_MAX_TOKENS", "2000")),
             "timeout": int(os.getenv("DEFAULT_TIMEOUT", "60")),
             
@@ -62,6 +64,12 @@ class Config:
         if config["temperature"] < 0 or config["temperature"] > 2:
             raise ValueError("Temperature must be between 0 and 2")
         
+        if config["top_p"] < 0 or config["top_p"] > 1:
+            raise ValueError("top_p must be between 0 and 1")
+        
+        if config["top_k"] < 0:
+            raise ValueError("top_k must be non-negative")
+        
         if config["max_tokens"] <= 0:
             raise ValueError("max_tokens must be positive")
         
@@ -85,6 +93,8 @@ class Config:
             "base_url": config["base_url"],
             "model_name": config["model_name"],
             "temperature": config["temperature"],
+            "top_p": config["top_p"],
+            "top_k": config["top_k"],
             "max_tokens": config["max_tokens"],
             "timeout": config["timeout"],
         }

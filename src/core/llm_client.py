@@ -24,6 +24,8 @@ class LLMClient:
                 - base_url: API endpoint URL
                 - model_name: Model identifier
                 - temperature: Generation temperature
+                - top_p: Nucleus sampling parameter
+                - top_k: Top-k sampling parameter
                 - max_tokens: Maximum response tokens
                 - timeout: Request timeout in seconds
         """
@@ -35,6 +37,8 @@ class LLMClient:
         )
         self.model_name = config["model_name"]
         self.temperature = config["temperature"]
+        self.top_p = config.get("top_p", 1.0)
+        self.top_k = config.get("top_k", 0)
         self.max_tokens = config["max_tokens"]
         self.timeout = config["timeout"]
     
@@ -116,12 +120,23 @@ class LLMClient:
             OpenAIError: For API errors
         """
         try:
-            response = await self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens
-            )
+            # Build request parameters
+            request_params = {
+                "model": self.model_name,
+                "messages": messages,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens
+            }
+            
+            # Add top_p if not default (1.0)
+            if self.top_p < 1.0:
+                request_params["top_p"] = self.top_p
+            
+            # Add top_k via extra_body if set (non-standard OpenAI parameter)
+            if self.top_k > 0:
+                request_params["extra_body"] = {"top_k": self.top_k}
+            
+            response = await self.client.chat.completions.create(**request_params)
             return response.choices[0].message.content
         except APITimeoutError as e:
             logger.error(f"Request timeout: {e}")

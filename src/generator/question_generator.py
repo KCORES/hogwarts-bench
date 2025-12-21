@@ -125,7 +125,8 @@ class QuestionGenerator:
                 output_path,
                 novel_path,
                 sampling_strategy,
-                context_window_size
+                context_window_size,
+                total_tokens
             )
             logger.info(f"Questions saved to {output_path}")
         
@@ -449,7 +450,8 @@ class QuestionGenerator:
         output_path: str,
         novel_path: str,
         sampling_strategy: str,
-        context_window_size: int
+        context_window_size: int,
+        total_tokens: int
     ) -> None:
         """
         Save generated questions to JSONL file with metadata.
@@ -460,12 +462,14 @@ class QuestionGenerator:
             novel_path: Source novel file path.
             sampling_strategy: Sampling strategy used.
             context_window_size: Context window size used.
+            total_tokens: Total number of tokens in the novel.
         """
         metadata = {
             "generated_at": datetime.now().isoformat(),
             "model_name": self.llm_client.model_name,
             "novel_path": novel_path,
             "total_questions": len(questions),
+            "total_tokens": total_tokens,
             "sampling_strategy": sampling_strategy,
             "context_window_size": context_window_size,
             "config": {

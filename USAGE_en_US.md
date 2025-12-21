@@ -276,6 +276,153 @@ The generated HTML report includes:
    - Shows question, correct answer, model answer, and score
    - Helps identify patterns in model failures
 
+### 4. Generate Heatmaps
+
+The heatmap generator creates visualizations showing question distribution coverage across context regions and model accuracy at different context positions.
+
+#### Basic Usage
+
+```bash
+# Generate question coverage heatmap
+python -m src.heatmap \
+    --mode coverage \
+    --questions data/questions.jsonl \
+    --output reports/coverage.html
+
+# Generate model accuracy heatmap
+python -m src.heatmap \
+    --mode accuracy \
+    --results data/results.jsonl \
+    --output reports/accuracy.html
+
+# Generate combined heatmap (coverage + accuracy aligned)
+python -m src.heatmap \
+    --mode combined \
+    --questions data/questions.jsonl \
+    --results data/results.jsonl \
+    --output reports/combined.html
+```
+
+#### Advanced Usage with All Options
+
+```bash
+python -m src.heatmap \
+    --mode combined \
+    --questions data/questions.jsonl \
+    --results data/results.jsonl \
+    --output reports/heatmap.html \
+    --bins 50 \
+    --context-length 200000
+```
+
+#### Parameters
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `--mode` | Yes | - | Heatmap mode: `coverage`, `accuracy`, or `combined` |
+| `--questions` | Depends | - | Question set JSONL file path (required for coverage and combined modes) |
+| `--results` | Depends | - | Test results JSONL file path (required for accuracy and combined modes) |
+| `--output` | Yes | - | Output HTML file path |
+| `--bins` | No | `50` | Number of bins to divide the context into |
+| `--context-length` | No | `200000` | Total context length (in tokens) |
+
+#### Heatmap Modes
+
+- **coverage**: Shows question distribution density across context regions, using blue gradient
+- **accuracy**: Shows model accuracy at each region, using red-yellow-green gradient (gray indicates no data)
+- **combined**: Displays coverage and accuracy aligned in the same chart for comparison analysis
+
+#### Heatmap Features
+
+- Automatically extracts model name and dataset name from JSONL file metadata
+- Displays project title "KCORES Hogwarts Bench" at the top
+- Embeds project logo in the bottom-right corner (included in PNG exports)
+- Supports interactive hover for detailed information
+- Supports export to PNG image
+
+### 5. Depth-Aware Testing
+
+Depth-aware testing evaluates LLM recall accuracy at different context depths. Instead of always placing evidence at the beginning of the context, this mode dynamically constructs contexts with evidence at various depth positions (0%, 25%, 50%, 75%, 100%).
+
+#### Basic Usage
+
+```bash
+# Uniform distribution across depths and context lengths
+python -m src.test \
+    --novel data/harry_potter_5.txt \
+    --data_set data/questions_validated.jsonl \
+    --depth-mode uniform \
+    --context-lengths 64000,128000,200000 \
+    --output data/results_depth.jsonl
+
+# Fixed depth testing (e.g., test only at 50% depth)
+python -m src.test \
+    --novel data/harry_potter_5.txt \
+    --data_set data/questions_validated.jsonl \
+    --depth-mode fixed \
+    --depth 0.5 \
+    --context-lengths 128000 \
+    --output data/results_fixed.jsonl
+```
+
+#### Parameters
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `--depth-mode` | No | `legacy` | Depth mode: `legacy`, `uniform`, or `fixed` |
+| `--depth` | For fixed | - | Fixed depth value (0.0-1.0) for fixed mode |
+| `--context-lengths` | For depth modes | - | Comma-separated context lengths (e.g., 64000,128000,200000) |
+
+#### Context Length Validation
+
+The tool validates `--context-lengths` before testing:
+- Context lengths must not exceed the novel's total token count
+- Context lengths must be large enough to contain question evidence with padding
+- At least some questions must be testable with the given context lengths
+
+If validation fails, the tool will report specific errors with suggestions.
+
+#### Depth Modes
+
+- **legacy** (default): Traditional testing mode, uses first N tokens as context
+- **uniform**: Distributes questions evenly across 5 depth bins (0%, 25%, 50%, 75%, 100%) and all specified context lengths
+- **fixed**: Tests all questions at a single fixed depth
+
+#### Output Format
+
+Depth-aware results include additional fields:
+
+```json
+{
+  "question": "What spell did Harry use?",
+  "correct_answer": ["a"],
+  "model_answer": ["a"],
+  "score": 1.0,
+  "depth": 0.5,
+  "depth_bin": "50%",
+  "test_context_length": 128000
+}
+```
+
+### 6. Generate Depth Heatmap
+
+Generate a 2D heatmap showing accuracy across context lengths (X-axis) and depths (Y-axis).
+
+#### Basic Usage
+
+```bash
+python -m src.heatmap \
+    --mode depth \
+    --results data/results_depth.jsonl \
+    --output reports/depth_heatmap.html
+```
+
+#### Heatmap Axes
+
+- **X-axis**: Context length (32K, 64K, 128K, 200K, etc.)
+- **Y-axis**: Evidence depth (0%, 25%, 50%, 75%, 100%)
+- **Color**: Accuracy (green=high, red=low, gray=no data)
+
 ## Project Structure
 
 ```

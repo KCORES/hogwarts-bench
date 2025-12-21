@@ -85,14 +85,21 @@ python -m src.generate \
     --question_nums 200 \
     --output data/questions.jsonl
 
-# 2. 使用 50k token 上下文测试 LLM
+# 2. （可选）验证生成的问题
+python -m src.validate \
+    --novel data/harry_potter_1.txt \
+    --questions data/questions.jsonl \
+    --output data/questions_validated.jsonl \
+    --valid-only
+
+# 3. 使用 50k token 上下文测试 LLM
 python -m src.test \
     --novel data/harry_potter_1.txt \
-    --data_set data/questions.jsonl \
+    --data_set data/questions_validated.jsonl \
     --context_length 50000 \
     --output data/results.jsonl
 
-# 3. 生成交互式 HTML 报告
+# 4. 生成交互式 HTML 报告
 python -m src.report \
     --results data/results.jsonl \
     --output reports/report.html
@@ -164,7 +171,76 @@ python -m src.generate \
 ```
 
 
-### 2. 运行测试
+### 2. 验证问题（可选）
+
+验证工具通过让验证 LLM 独立回答每个问题并比较结果来验证生成的问题质量。
+
+#### 基本用法
+
+```bash
+python -m src.validate \
+    --novel data/harry_potter_1.txt \
+    --questions data/questions.jsonl \
+    --output data/questions_validated.jsonl
+```
+
+#### 使用所有选项的高级用法
+
+```bash
+python -m src.validate \
+    --novel data/harry_potter_1.txt \
+    --questions data/questions.jsonl \
+    --output data/questions_validated.jsonl \
+    --concurrency 5 \
+    --confidence-threshold medium \
+    --similarity-threshold 0.8 \
+    --valid-only
+```
+
+#### 参数说明
+
+| 参数 | 必需 | 默认值 | 描述 |
+|------|------|--------|------|
+| `--novel` | 是 | - | 小说文本文件路径 |
+| `--questions` | 是 | - | 待验证的问题 JSONL 文件路径 |
+| `--output` | 是 | - | 验证后问题的输出路径 |
+| `--concurrency` | 否 | `5` | 并发验证请求数 |
+| `--confidence-threshold` | 否 | `medium` | 最低置信度级别：`low`、`medium`、`high` |
+| `--similarity-threshold` | 否 | `0.8` | 证据匹配的最低相似度（0.0-1.0） |
+| `--valid-only` | 否 | `false` | 仅输出通过验证的问题 |
+| `--verbose` | 否 | `false` | 启用详细日志 |
+
+#### 验证检查项
+
+验证器执行以下检查：
+1. **答案验证**：让验证 LLM 独立回答问题
+2. **答案比对**：将验证答案与标注答案进行比较
+3. **证据匹配**：验证源上下文中是否存在支持证据
+4. **置信度评估**：检查 LLM 对其答案的置信度级别
+
+#### 输出格式
+
+输出包含每个问题的验证元数据：
+
+```json
+{
+  "question": "哈利使用了什么咒语？",
+  "question_type": "single_choice",
+  "choice": {"a": "除你武器", "b": "昏昏倒地", "c": "盔甲护身", "d": "呼神护卫"},
+  "answer": ["a"],
+  "position": {"start_pos": 12500, "end_pos": 12650},
+  "validation": {
+    "is_valid": true,
+    "verification_answer": ["a"],
+    "answer_match": true,
+    "evidence_found": true,
+    "confidence": "high"
+  }
+}
+```
+
+
+### 3. 运行测试
 
 测试工具使用生成的问题在目标 LLM 上执行测试。
 
@@ -227,7 +303,7 @@ python -m src.test \
 }
 ```
 
-### 3. 生成报告
+### 4. 生成报告
 
 报告生成器创建带有可视化和指标的交互式 HTML 报告。
 
@@ -276,6 +352,153 @@ python -m src.report \
    - 错误或部分正确答案的随机样本
    - 显示问题、正确答案、模型答案和分数
    - 帮助识别模型失败的模式
+
+### 5. 生成热力图
+
+热力图生成器创建可视化图表，展示问题在上下文中的分布覆盖情况以及模型在不同上下文区域的正确率。
+
+#### 基本用法
+
+```bash
+# 生成问题覆盖度热力图
+python -m src.heatmap \
+    --mode coverage \
+    --questions data/questions.jsonl \
+    --output reports/coverage.html
+
+# 生成模型正确率热力图
+python -m src.heatmap \
+    --mode accuracy \
+    --results data/results.jsonl \
+    --output reports/accuracy.html
+
+# 生成组合热力图（覆盖度 + 正确率对齐展示）
+python -m src.heatmap \
+    --mode combined \
+    --questions data/questions.jsonl \
+    --results data/results.jsonl \
+    --output reports/combined.html
+```
+
+#### 使用所有选项的高级用法
+
+```bash
+python -m src.heatmap \
+    --mode combined \
+    --questions data/questions.jsonl \
+    --results data/results.jsonl \
+    --output reports/heatmap.html \
+    --bins 50 \
+    --context-length 200000
+```
+
+#### 参数说明
+
+| 参数 | 必需 | 默认值 | 描述 |
+|------|------|--------|------|
+| `--mode` | 是 | - | 热力图模式：`coverage`（覆盖度）、`accuracy`（正确率）或 `combined`（组合） |
+| `--questions` | 视模式 | - | 问题集 JSONL 文件路径（coverage 和 combined 模式必需） |
+| `--results` | 视模式 | - | 测试结果 JSONL 文件路径（accuracy 和 combined 模式必需） |
+| `--output` | 是 | - | 输出 HTML 文件路径 |
+| `--bins` | 否 | `50` | 将上下文划分的区间数量 |
+| `--context-length` | 否 | `200000` | 上下文总长度（token 数） |
+
+#### 热力图模式
+
+- **coverage（覆盖度）**：展示问题在上下文各区域的分布密度，使用蓝色渐变
+- **accuracy（正确率）**：展示模型在各区域的回答正确率，使用红-黄-绿渐变（灰色表示无数据）
+- **combined（组合）**：将覆盖度和正确率对齐展示在同一图表中，便于对比分析
+
+#### 热力图特性
+
+- 自动从 JSONL 文件提取模型名称和数据集名称
+- 顶部显示项目标题 "KCORES Hogwarts Bench"
+- 右下角嵌入项目 Logo（导出 PNG 时会包含）
+- 支持交互式悬停查看详细信息
+- 支持导出为 PNG 图片
+
+### 6. 深度感知测试
+
+深度感知测试评估 LLM 在不同上下文深度的召回准确率。与传统模式总是将证据放在上下文开头不同，此模式动态构建上下文，将证据放置在不同深度位置（0%、25%、50%、75%、100%）。
+
+#### 基本用法
+
+```bash
+# 均匀分布到各深度和上下文长度
+python -m src.test \
+    --novel data/harry_potter_5.txt \
+    --data_set data/questions_validated.jsonl \
+    --depth-mode uniform \
+    --context-lengths 64000,128000,200000 \
+    --output data/results_depth.jsonl
+
+# 固定深度测试（例如，仅在 50% 深度测试）
+python -m src.test \
+    --novel data/harry_potter_5.txt \
+    --data_set data/questions_validated.jsonl \
+    --depth-mode fixed \
+    --depth 0.5 \
+    --context-lengths 128000 \
+    --output data/results_fixed.jsonl
+```
+
+#### 参数说明
+
+| 参数 | 必需 | 默认值 | 描述 |
+|------|------|--------|------|
+| `--depth-mode` | 否 | `legacy` | 深度模式：`legacy`、`uniform` 或 `fixed` |
+| `--depth` | fixed 模式必需 | - | 固定深度值（0.0-1.0） |
+| `--context-lengths` | 深度模式必需 | - | 逗号分隔的上下文长度（如 64000,128000,200000） |
+
+#### 上下文长度验证
+
+工具会在测试前验证 `--context-lengths` 参数：
+- 上下文长度不能超过小说的总 token 数
+- 上下文长度必须足够大，能够容纳问题证据和填充
+- 至少要有部分问题可以在给定的上下文长度下进行测试
+
+如果验证失败，工具会报告具体错误并给出建议。
+
+#### 深度模式
+
+- **legacy**（默认）：传统测试模式，使用前 N 个 token 作为上下文
+- **uniform**：将问题均匀分配到 5 个深度区间（0%、25%、50%、75%、100%）和所有指定的上下文长度
+- **fixed**：所有问题在单一固定深度测试
+
+#### 输出格式
+
+深度感知结果包含额外字段：
+
+```json
+{
+  "question": "哈利使用了什么咒语？",
+  "correct_answer": ["a"],
+  "model_answer": ["a"],
+  "score": 1.0,
+  "depth": 0.5,
+  "depth_bin": "50%",
+  "test_context_length": 128000
+}
+```
+
+### 7. 生成深度热力图
+
+生成二维热力图，展示不同上下文长度（X轴）和深度（Y轴）的准确率。
+
+#### 基本用法
+
+```bash
+python -m src.heatmap \
+    --mode depth \
+    --results data/results_depth.jsonl \
+    --output reports/depth_heatmap.html
+```
+
+#### 热力图坐标轴
+
+- **X轴**：上下文长度（32K、64K、128K、200K 等）
+- **Y轴**：证据深度（0%、25%、50%、75%、100%）
+- **颜色**：准确率（绿色=高，红色=低，灰色=无数据）
 
 ## 项目结构
 
