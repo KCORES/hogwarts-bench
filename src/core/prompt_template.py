@@ -133,6 +133,65 @@ class PromptTemplateManager:
         ]
     }
     
+    # Default summary generation prompt template
+    # Used to generate a brief description of the novel for no-reference testing
+    DEFAULT_SUMMARY_GENERATION_TEMPLATE = {
+        "system": (
+            "你是一位文学分析专家。请根据提供的小说片段，"
+            "生成一个简短的小说描述，说明这是什么小说、主要讲述什么故事。"
+            "注意：不要透露具体的情节细节或剧透。"
+        ),
+        "user": (
+            "请阅读以下小说片段：\n\n"
+            "{excerpt}\n\n"
+            "请用2-3句话描述这是什么小说，包括：\n"
+            "1. 小说的名称（如果能识别）\n"
+            "2. 小说的类型和主题\n"
+            "3. 主要角色（如果能识别）\n\n"
+            "请直接输出描述，不要添加任何其他说明。"
+        ),
+        "constraints": [
+            "描述应简洁明了，2-3句话即可",
+            "不要透露具体情节或剧透",
+            "如果无法识别小说，描述其类型和主题"
+        ]
+    }
+    
+    # Default no-reference testing prompt template
+    # Used for testing without providing novel context
+    # Note: Use {{ and }} to escape braces in format strings
+    DEFAULT_NO_REFERENCE_TESTING_TEMPLATE = {
+        "system": (
+            "你是一位文学知识专家。请根据你对小说的了解回答问题。"
+            "你的回答应该基于你对这部小说的知识，而不是猜测。"
+            "如果你完全不确定答案，请输出空答案数组。"
+        ),
+        "user": (
+            "以下问题来自这部小说：\n\n"
+            "{summary}\n\n"
+            "---\n\n"
+            "问题：{question}\n\n"
+            "选项：\n"
+            "{choices}\n\n"
+            "请根据你对这部小说的了解选择正确答案。\n"
+            "要求：\n"
+            "1. 对于单选题，选择一个最符合的选项\n"
+            "2. 对于多选题，选择所有符合的选项\n"
+            "3. 如果你完全不确定答案，请输出空数组\n"
+            "4. 必须以JSON格式输出答案，格式如下：\n"
+            '{{{{"answer": ["a"]}}}}  // 单选题示例\n'
+            '{{{{"answer": ["a", "c"]}}}}  // 多选题示例\n'
+            '{{{{"answer": []}}}}  // 不确定时输出空数组\n\n'
+            "请直接输出JSON格式的答案，不要添加任何其他说明文字。"
+        ),
+        "constraints": [
+            "输出必须是有效的JSON格式",
+            "answer字段必须是数组类型",
+            "答案应基于对小说的了解",
+            "不确定时输出空数组"
+        ]
+    }
+    
     def __init__(self, template_dir: str = "prompts/"):
         """
         Initialize the PromptTemplateManager.
@@ -145,6 +204,8 @@ class PromptTemplateManager:
         self.question_generation_template = None
         self.testing_template = None
         self.validation_template = None
+        self.summary_generation_template = None
+        self.no_reference_testing_template = None
         
         # Try to load custom templates if they exist
         self._load_templates()
@@ -188,6 +249,34 @@ class PromptTemplateManager:
                 self.validation_template = self.DEFAULT_VALIDATION_TEMPLATE
         else:
             self.validation_template = self.DEFAULT_VALIDATION_TEMPLATE
+        
+        # Load summary generation template
+        summary_gen_path = self.template_dir / "summary_generation.json"
+        if summary_gen_path.exists():
+            try:
+                self.summary_generation_template = self._load_template_file(
+                    summary_gen_path
+                )
+            except Exception as e:
+                print(f"Warning: Failed to load summary generation template: {e}")
+                print("Using default template instead.")
+                self.summary_generation_template = self.DEFAULT_SUMMARY_GENERATION_TEMPLATE
+        else:
+            self.summary_generation_template = self.DEFAULT_SUMMARY_GENERATION_TEMPLATE
+        
+        # Load no-reference testing template
+        no_ref_path = self.template_dir / "no_reference_testing.json"
+        if no_ref_path.exists():
+            try:
+                self.no_reference_testing_template = self._load_template_file(
+                    no_ref_path
+                )
+            except Exception as e:
+                print(f"Warning: Failed to load no-reference testing template: {e}")
+                print("Using default template instead.")
+                self.no_reference_testing_template = self.DEFAULT_NO_REFERENCE_TESTING_TEMPLATE
+        else:
+            self.no_reference_testing_template = self.DEFAULT_NO_REFERENCE_TESTING_TEMPLATE
     
     def _load_template_file(self, file_path: Path) -> Dict[str, Any]:
         """
@@ -320,13 +409,17 @@ class PromptTemplateManager:
         Args:
             template_path: Path to the custom template JSON file.
             template_type: Type of template to load 
-                          ("question_generation", "testing", or "validation").
+                          ("question_generation", "testing", "validation",
+                           "summary_generation", or "no_reference_testing").
         
         Raises:
             ValueError: If template_type is invalid or template is malformed.
             FileNotFoundError: If the template file does not exist.
         """
-        valid_types = ["question_generation", "testing", "validation"]
+        valid_types = [
+            "question_generation", "testing", "validation",
+            "summary_generation", "no_reference_testing"
+        ]
         if template_type not in valid_types:
             raise ValueError(
                 f"Invalid template_type: {template_type}. "
@@ -339,8 +432,12 @@ class PromptTemplateManager:
             self.question_generation_template = template
         elif template_type == "testing":
             self.testing_template = template
-        else:
+        elif template_type == "validation":
             self.validation_template = template
+        elif template_type == "summary_generation":
+            self.summary_generation_template = template
+        else:  # no_reference_testing
+            self.no_reference_testing_template = template
     
     def get_validation_prompt(
         self,
@@ -366,6 +463,59 @@ class PromptTemplateManager:
             context=context,
             question=question,
             choices=choices
+        )
+        
+        return system_prompt, user_prompt
+    
+    def get_summary_generation_prompt(
+        self,
+        excerpt: str
+    ) -> tuple[str, str]:
+        """
+        Get the formatted prompt for novel summary generation.
+        
+        Args:
+            excerpt: The novel excerpt text (typically first 100 lines).
+        
+        Returns:
+            Tuple of (system_prompt, user_prompt) with placeholders filled.
+        """
+        template = self.summary_generation_template
+        
+        system_prompt = template["system"]
+        user_prompt = template["user"].format(excerpt=excerpt)
+        
+        return system_prompt, user_prompt
+    
+    def get_no_reference_testing_prompt(
+        self,
+        summary: str,
+        question: str,
+        choices: Dict[str, str]
+    ) -> tuple[str, str]:
+        """
+        Get the formatted prompt for no-reference testing.
+        
+        Args:
+            summary: The novel summary from question set metadata.
+            question: The question text.
+            choices: Dictionary of answer choices (e.g., {"a": "...", "b": "..."}).
+        
+        Returns:
+            Tuple of (system_prompt, user_prompt) with placeholders filled.
+        """
+        template = self.no_reference_testing_template
+        
+        # Format choices as a readable string
+        choices_str = "\n".join([
+            f"{key}. {value}" for key, value in choices.items()
+        ])
+        
+        system_prompt = template["system"]
+        user_prompt = template["user"].format(
+            summary=summary,
+            question=question,
+            choices=choices_str
         )
         
         return system_prompt, user_prompt
@@ -398,6 +548,20 @@ class PromptTemplateManager:
                 "is_default": (
                     self.validation_template == 
                     self.DEFAULT_VALIDATION_TEMPLATE
+                )
+            },
+            "summary_generation_template": {
+                "loaded": self.summary_generation_template is not None,
+                "is_default": (
+                    self.summary_generation_template == 
+                    self.DEFAULT_SUMMARY_GENERATION_TEMPLATE
+                )
+            },
+            "no_reference_testing_template": {
+                "loaded": self.no_reference_testing_template is not None,
+                "is_default": (
+                    self.no_reference_testing_template == 
+                    self.DEFAULT_NO_REFERENCE_TESTING_TEMPLATE
                 )
             }
         }

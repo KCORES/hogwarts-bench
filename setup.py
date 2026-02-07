@@ -42,6 +42,7 @@ setup(
             "hogwarts-generate=src.generate:cli_main",
             "hogwarts-test=src.test:cli_main",
             "hogwarts-report=src.report:main",
+            "hogwarts-summary=src.summary:cli_main",
         ],
     },
 )

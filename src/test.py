@@ -48,15 +48,19 @@ Examples:
   python -m src.test --novel data/novel.txt --data_set data/questions.jsonl \\
       --depth-mode fixed --depth 0.5 --context-lengths 128000 \\
       --output data/results_fixed.jsonl
+  
+  # No-reference testing (test model's inherent knowledge)
+  python -m src.test --no-reference --data_set data/questions.jsonl \\
+      --output data/results_no_ref.jsonl
         """
     )
     
-    # Required arguments
+    # Required arguments (novel is optional for no-reference mode)
     parser.add_argument(
         '--novel',
         type=str,
-        required=True,
-        help='Path to the novel text file'
+        default=None,
+        help='Path to the novel text file (not required for --no-reference mode)'
     )
     
     parser.add_argument(
@@ -71,6 +75,13 @@ Examples:
         type=int,
         default=None,
         help='Number of tokens to use as context (required for legacy mode)'
+    )
+    
+    # No-reference testing mode
+    parser.add_argument(
+        '--no-reference',
+        action='store_true',
+        help='Run tests without novel context (test model inherent knowledge)'
     )
     
     # Depth-aware testing arguments
@@ -107,8 +118,8 @@ Examples:
     parser.add_argument(
         '--concurrency',
         type=int,
-        default=5,
-        help='Number of concurrent test requests (default: 5)'
+        default=None,
+        help='Number of concurrent test requests (default: from DEFAULT_CONCURRENCY in .env, or 5)'
     )
     
     parser.add_argument(
@@ -143,6 +154,22 @@ Examples:
         help='Enable verbose logging'
     )
     
+    # Question limit argument
+    parser.add_argument(
+        '--max-questions',
+        type=int,
+        default=None,
+        help='Maximum number of questions to test. Questions will be sampled uniformly across depth bins to ensure balanced coverage.'
+    )
+    
+    # Recovery mode arguments
+    parser.add_argument(
+        '--recovery',
+        type=str,
+        default=None,
+        help='Path to previous results file for recovery mode. Will re-run failed/error/missing tests only.'
+    )
+    
     return parser.parse_args()
 
 
@@ -155,51 +182,91 @@ def validate_args(args):
     Raises:
         ValueError: If arguments are invalid.
     """
-    # Validate novel file exists
-    if not Path(args.novel).exists():
-        raise ValueError(f"Novel file not found: {args.novel}")
+    # Recovery mode validation
+    if args.recovery:
+        if not Path(args.recovery).exists():
+            raise ValueError(f"Recovery file not found: {args.recovery}")
+        # In recovery mode, we still need the original parameters to re-run failed tests
     
     # Validate question set file exists
     if not Path(args.data_set).exists():
         raise ValueError(f"Question set file not found: {args.data_set}")
     
-    # Validate depth mode and related arguments
-    depth_mode = args.depth_mode
-    
-    if depth_mode == 'legacy':
-        # Legacy mode requires context_length
-        if args.context_length is None:
-            raise ValueError("--context_length is required for legacy mode")
-        if args.context_length <= 0:
-            raise ValueError("context_length must be positive")
+    # No-reference mode validation
+    if args.no_reference:
+        # Check for mutually exclusive arguments
+        if args.depth_mode != 'legacy':
+            raise ValueError(
+                "--no-reference cannot be used with --depth-mode. "
+                "No-reference mode tests without any context."
+            )
+        if args.context_length is not None:
+            raise ValueError(
+                "--no-reference cannot be used with --context_length. "
+                "No-reference mode tests without any context."
+            )
+        if args.context_lengths is not None:
+            raise ValueError(
+                "--no-reference cannot be used with --context-lengths. "
+                "No-reference mode tests without any context."
+            )
+        # Warn if novel is provided
+        if args.novel:
+            logger.warning(
+                "--novel is ignored in no-reference mode. "
+                "Tests will use novel_summary from question set metadata."
+            )
     else:
-        # Depth-aware modes require context-lengths
-        if args.context_lengths is None:
-            raise ValueError(f"--context-lengths is required for {depth_mode} mode")
+        # Standard mode requires novel
+        if not args.novel:
+            raise ValueError(
+                "--novel is required (unless using --no-reference mode)"
+            )
         
-        # Parse and validate context lengths
-        try:
-            context_lengths = [int(x.strip()) for x in args.context_lengths.split(',')]
-            if not context_lengths:
-                raise ValueError("--context-lengths cannot be empty")
-            for length in context_lengths:
-                if length <= 0:
-                    raise ValueError(f"Invalid context length: {length}")
-        except ValueError as e:
-            raise ValueError(f"Invalid --context-lengths format: {e}")
+        # Validate novel file exists
+        if not Path(args.novel).exists():
+            raise ValueError(f"Novel file not found: {args.novel}")
         
-        # Fixed mode requires depth
-        if depth_mode == 'fixed':
-            if args.depth is None:
-                raise ValueError("--depth is required for fixed mode")
-            if not 0.0 <= args.depth <= 1.0:
-                raise ValueError("--depth must be between 0.0 and 1.0")
+        # Validate depth mode and related arguments
+        depth_mode = args.depth_mode
+        
+        if depth_mode == 'legacy':
+            # Legacy mode requires context_length
+            if args.context_length is None:
+                raise ValueError("--context_length is required for legacy mode")
+            if args.context_length <= 0:
+                raise ValueError("context_length must be positive")
+        else:
+            # Depth-aware modes require context-lengths
+            if args.context_lengths is None:
+                raise ValueError(f"--context-lengths is required for {depth_mode} mode")
+            
+            # Parse and validate context lengths
+            try:
+                context_lengths = [int(x.strip()) for x in args.context_lengths.split(',')]
+                if not context_lengths:
+                    raise ValueError("--context-lengths cannot be empty")
+                for length in context_lengths:
+                    if length <= 0:
+                        raise ValueError(f"Invalid context length: {length}")
+            except ValueError as e:
+                raise ValueError(f"Invalid --context-lengths format: {e}")
+            
+            # Fixed mode requires depth
+            if depth_mode == 'fixed':
+                if args.depth is None:
+                    raise ValueError("--depth is required for fixed mode")
+                if not 0.0 <= args.depth <= 1.0:
+                    raise ValueError("--depth must be between 0.0 and 1.0")
+        
+        if args.padding_size < 0:
+            raise ValueError("padding_size must be non-negative")
     
-    if args.padding_size < 0:
-        raise ValueError("padding_size must be non-negative")
-    
-    if args.concurrency <= 0:
+    if args.concurrency is not None and args.concurrency <= 0:
         raise ValueError("concurrency must be positive")
+    
+    if args.max_questions is not None and args.max_questions <= 0:
+        raise ValueError("max-questions must be positive")
     
     # Validate output path is writable
     output_path = Path(args.output)
@@ -230,6 +297,11 @@ async def main():
         Config.validate_config(config)
         llm_config = Config.get_llm_config(config)
         
+        # Set default concurrency from config if not specified via CLI
+        if args.concurrency is None:
+            args.concurrency = config.get("default_concurrency", 5)
+            logger.info(f"Using default concurrency from config: {args.concurrency}")
+        
         logger.info(f"Using model: {llm_config['model_name']}")
         logger.info(f"API endpoint: {llm_config['base_url']}")
         
@@ -246,18 +318,23 @@ async def main():
         # Display testing parameters
         logger.info("=" * 60)
         logger.info("Testing Parameters:")
-        logger.info(f"  Novel: {args.novel}")
-        logger.info(f"  Question set: {args.data_set}")
-        logger.info(f"  Depth mode: {args.depth_mode}")
-        if args.depth_mode == 'legacy':
-            logger.info(f"  Context length: {args.context_length} tokens")
+        if args.no_reference:
+            logger.info(f"  Mode: NO-REFERENCE (testing model's inherent knowledge)")
+            logger.info(f"  Question set: {args.data_set}")
         else:
-            context_lengths = [int(x.strip()) for x in args.context_lengths.split(',')]
-            logger.info(f"  Context lengths: {context_lengths}")
-            if args.depth_mode == 'fixed':
-                logger.info(f"  Fixed depth: {args.depth}")
-        logger.info(f"  Padding size: {args.padding_size} tokens")
+            logger.info(f"  Novel: {args.novel}")
+            logger.info(f"  Question set: {args.data_set}")
+            logger.info(f"  Depth mode: {args.depth_mode}")
+            if args.depth_mode == 'legacy':
+                logger.info(f"  Context length: {args.context_length} tokens")
+            else:
+                context_lengths = [int(x.strip()) for x in args.context_lengths.split(',')]
+                logger.info(f"  Context lengths: {context_lengths}")
+                if args.depth_mode == 'fixed':
+                    logger.info(f"  Fixed depth: {args.depth}")
+            logger.info(f"  Padding size: {args.padding_size} tokens")
         logger.info(f"  Concurrency: {args.concurrency}")
+        logger.info(f"  Max questions: {args.max_questions if args.max_questions else 'all'}")
         logger.info(f"  Skip validation: {args.skip_validation}")
         logger.info(f"  Ignore invalid: {args.ignore_invalid}")
         logger.info(f"  Output: {args.output}")
@@ -266,7 +343,56 @@ async def main():
         # Run tests based on mode
         logger.info("Starting test execution...")
         
-        if args.depth_mode == 'legacy':
+        # Check for recovery mode
+        if args.recovery:
+            logger.info(f"Recovery mode enabled, loading previous results from: {args.recovery}")
+            if args.no_reference:
+                results = await testing_tool.run_no_reference_recovery(
+                    recovery_path=args.recovery,
+                    question_set_path=args.data_set,
+                    concurrency=args.concurrency,
+                    output_path=args.output,
+                    skip_validation=args.skip_validation,
+                    ignore_invalid=args.ignore_invalid
+                )
+            elif args.depth_mode == 'legacy':
+                results = await testing_tool.run_recovery(
+                    recovery_path=args.recovery,
+                    novel_path=args.novel,
+                    question_set_path=args.data_set,
+                    context_length=args.context_length,
+                    padding_size=args.padding_size,
+                    concurrency=args.concurrency,
+                    output_path=args.output,
+                    skip_validation=args.skip_validation,
+                    ignore_invalid=args.ignore_invalid
+                )
+            else:
+                context_lengths = [int(x.strip()) for x in args.context_lengths.split(',')]
+                results = await testing_tool.run_depth_aware_recovery(
+                    recovery_path=args.recovery,
+                    novel_path=args.novel,
+                    question_set_path=args.data_set,
+                    depth_mode=args.depth_mode,
+                    context_lengths=context_lengths,
+                    fixed_depth=args.depth,
+                    padding_size=args.padding_size,
+                    concurrency=args.concurrency,
+                    output_path=args.output,
+                    skip_validation=args.skip_validation,
+                    ignore_invalid=args.ignore_invalid
+                )
+        elif args.no_reference:
+            # No-reference mode - test model's inherent knowledge
+            results = await testing_tool.run_no_reference_tests(
+                question_set_path=args.data_set,
+                concurrency=args.concurrency,
+                output_path=args.output,
+                skip_validation=args.skip_validation,
+                ignore_invalid=args.ignore_invalid,
+                max_questions=args.max_questions
+            )
+        elif args.depth_mode == 'legacy':
             # Legacy mode - use original run_tests
             results = await testing_tool.run_tests(
                 novel_path=args.novel,
@@ -276,7 +402,8 @@ async def main():
                 concurrency=args.concurrency,
                 output_path=args.output,
                 skip_validation=args.skip_validation,
-                ignore_invalid=args.ignore_invalid
+                ignore_invalid=args.ignore_invalid,
+                max_questions=args.max_questions
             )
         else:
             # Depth-aware mode
@@ -291,7 +418,8 @@ async def main():
                 concurrency=args.concurrency,
                 output_path=args.output,
                 skip_validation=args.skip_validation,
-                ignore_invalid=args.ignore_invalid
+                ignore_invalid=args.ignore_invalid,
+                max_questions=args.max_questions
             )
         
         # Display summary statistics

@@ -70,6 +70,7 @@ DEFAULT_MAX_TOKENS=2000
 DEFAULT_TIMEOUT=60
 DEFAULT_CONCURRENCY=5
 DEFAULT_RETRY_TIMES=3
+DEFAULT_RETRY_DELAY=5
 ```
 
 ## Usage
@@ -198,6 +199,7 @@ python -m src.test \
 | `--context_length` | Yes | - | Total context length (in tokens) to provide to LLM |
 | `--padding_size` | No | `500` | Buffer tokens to ensure answers aren't truncated |
 | `--concurrency` | No | `5` | Number of concurrent test requests |
+| `--max-questions` | No | all | Maximum number of questions to test, sampled uniformly by depth |
 | `--output` | Yes | - | Output results JSONL file path |
 
 #### Context Length Guidelines
@@ -372,6 +374,7 @@ python -m src.test \
 | `--depth-mode` | No | `legacy` | Depth mode: `legacy`, `uniform`, or `fixed` |
 | `--depth` | For fixed | - | Fixed depth value (0.0-1.0) for fixed mode |
 | `--context-lengths` | For depth modes | - | Comma-separated context lengths (e.g., 64000,128000,200000) |
+| `--max-questions` | No | all | Maximum number of questions to test, sampled uniformly by depth |
 
 #### Context Length Validation
 
@@ -404,7 +407,112 @@ Depth-aware results include additional fields:
 }
 ```
 
-### 6. Generate Depth Heatmap
+### 6. No-Reference Mode Testing
+
+No-reference mode tests whether the LLM has memorized novel content during training. In this mode, tests are conducted without providing the novel text as context - only a novel summary is used as background information.
+
+#### Use Cases
+
+- Detect if the model has learned Harry Potter novel content during pre-training
+- Evaluate the difference between model's "inherent knowledge" and "context retrieval ability"
+- Serve as a baseline comparison to understand performance differences with/without reference
+
+#### Generate Novel Summary
+
+Before using no-reference mode, you need to generate a novel summary for the question set. There are two ways:
+
+**Option 1: Generate summary automatically when creating questions**
+
+```bash
+python -m src.generate \
+    --novel data/harry_potter_1.txt \
+    --question_nums 200 \
+    --generate-summary \
+    --output data/questions.jsonl
+```
+
+**Option 2: Add summary to existing question set**
+
+```bash
+python -m src.summary \
+    --novel data/harry_potter_1.txt \
+    --data_set data/questions.jsonl \
+    --output data/questions_with_summary.jsonl
+```
+
+#### Run No-Reference Tests
+
+```bash
+python -m src.test \
+    --no-reference \
+    --data_set data/questions_with_summary.jsonl \
+    --output data/results_no_ref.jsonl
+```
+
+#### Parameters
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `--no-reference` | Yes | - | Enable no-reference testing mode |
+| `--data_set` | Yes | - | Question set JSONL file path (must contain `novel_summary` metadata) |
+| `--output` | Yes | - | Output results JSONL file path |
+| `--concurrency` | No | `5` | Number of concurrent test requests |
+| `--max-questions` | No | all | Maximum number of questions to test, sampled uniformly by depth |
+| `--skip-validation` | No | `false` | Skip validation field check |
+| `--ignore-invalid` | No | `false` | Skip invalid questions instead of erroring |
+
+#### Important Notes
+
+- `--no-reference` cannot be used with `--novel`, `--context_length`, `--context-lengths`, `--depth-mode`, etc.
+- Question set must contain `novel_summary` metadata field, otherwise an error will be raised
+- No-reference mode tests all questions without position-based filtering
+
+#### Output Format
+
+No-reference test results include a `test_mode` field:
+
+```json
+{
+  "question": "What spell did Harry use?",
+  "question_type": "single_choice",
+  "choice": {"a": "Expelliarmus", "b": "Stupefy", "c": "Protego", "d": "Expecto Patronum"},
+  "correct_answer": ["a"],
+  "model_answer": ["a"],
+  "parsing_status": "success",
+  "position": {"start_pos": 12500, "end_pos": 12650},
+  "score": 1.0,
+  "metrics": {},
+  "test_mode": "no_reference"
+}
+```
+
+#### Summary Generation Command
+
+The standalone summary generation tool adds novel summaries to existing question sets:
+
+```bash
+# Basic usage
+python -m src.summary \
+    --novel data/harry_potter_1.txt \
+    --data_set data/questions.jsonl \
+    --output data/questions_with_summary.jsonl
+
+# Custom excerpt lines (default 100 lines)
+python -m src.summary \
+    --novel data/harry_potter_1.txt \
+    --data_set data/questions.jsonl \
+    --excerpt-lines 150 \
+    --output data/questions_with_summary.jsonl
+```
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `--novel` | Yes | - | Path to novel text file |
+| `--data_set` | Yes | - | Path to question set JSONL file |
+| `--output` | No | Overwrites original | Output file path |
+| `--excerpt-lines` | No | `100` | Number of novel lines to use for summary generation |
+
+### 7. Generate Depth Heatmap
 
 Generate a 2D heatmap showing accuracy across context lengths (X-axis) and depths (Y-axis).
 

@@ -19,6 +19,7 @@ from ..core.validator import QuestionValidator
 from ..core.prompt_template import PromptTemplateManager
 from ..core.file_io import FileIO
 from .sampling import get_sampling_strategy
+from .summary_generator import SummaryGenerator
 
 
 # Configure logging
@@ -39,7 +40,8 @@ class QuestionGenerator:
         llm_client: LLMClient,
         tokenizer: Tokenizer = None,
         prompt_manager: PromptTemplateManager = None,
-        validator: QuestionValidator = None
+        validator: QuestionValidator = None,
+        summary_generator: SummaryGenerator = None
     ):
         """
         Initialize the QuestionGenerator.
@@ -49,11 +51,16 @@ class QuestionGenerator:
             tokenizer: Tokenizer for text processing. If None, creates default.
             prompt_manager: Prompt template manager. If None, creates default.
             validator: Question validator. If None, uses QuestionValidator.
+            summary_generator: Summary generator. If None, creates default.
         """
         self.llm_client = llm_client
         self.tokenizer = tokenizer or Tokenizer()
         self.prompt_manager = prompt_manager or PromptTemplateManager()
         self.validator = validator or QuestionValidator()
+        self.summary_generator = summary_generator or SummaryGenerator(
+            llm_client=llm_client,
+            prompt_manager=self.prompt_manager
+        )
     
     async def generate_questions(
         self,
@@ -63,7 +70,8 @@ class QuestionGenerator:
         context_window_size: int = 500,
         concurrency: int = 5,
         retry_times: int = 3,
-        output_path: Optional[str] = None
+        output_path: Optional[str] = None,
+        generate_summary: bool = True
     ) -> List[Dict]:
         """
         Main entry point for question generation.
@@ -76,12 +84,24 @@ class QuestionGenerator:
             concurrency: Number of concurrent generation tasks.
             retry_times: Maximum retry attempts for failed generations.
             output_path: Optional path to save generated questions.
+            generate_summary: Whether to generate novel summary (default: True).
             
         Returns:
             List of generated question dictionaries.
         """
         logger.info(f"Starting question generation from {novel_path}")
         logger.info(f"Target: {num_questions} questions, Strategy: {sampling_strategy}")
+        
+        # Generate novel summary if requested
+        novel_summary = None
+        if generate_summary:
+            logger.info("Generating novel summary...")
+            try:
+                novel_summary = await self.summary_generator.generate_summary(novel_path)
+                logger.info(f"Novel summary generated: {novel_summary[:100]}...")
+            except Exception as e:
+                logger.warning(f"Failed to generate novel summary: {e}")
+                logger.warning("Continuing without summary...")
         
         # Read novel text
         logger.info("Reading novel text...")
@@ -126,7 +146,8 @@ class QuestionGenerator:
                 novel_path,
                 sampling_strategy,
                 context_window_size,
-                total_tokens
+                total_tokens,
+                novel_summary
             )
             logger.info(f"Questions saved to {output_path}")
         
@@ -451,7 +472,8 @@ class QuestionGenerator:
         novel_path: str,
         sampling_strategy: str,
         context_window_size: int,
-        total_tokens: int
+        total_tokens: int,
+        novel_summary: Optional[str] = None
     ) -> None:
         """
         Save generated questions to JSONL file with metadata.
@@ -463,6 +485,7 @@ class QuestionGenerator:
             sampling_strategy: Sampling strategy used.
             context_window_size: Context window size used.
             total_tokens: Total number of tokens in the novel.
+            novel_summary: Optional novel summary for no-reference testing.
         """
         metadata = {
             "generated_at": datetime.now().isoformat(),
@@ -478,5 +501,9 @@ class QuestionGenerator:
                 "timeout": self.llm_client.timeout
             }
         }
+        
+        # Add novel summary if available
+        if novel_summary:
+            metadata["novel_summary"] = novel_summary
         
         FileIO.write_jsonl(output_path, questions, metadata)

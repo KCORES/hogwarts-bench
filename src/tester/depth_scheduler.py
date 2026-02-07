@@ -6,6 +6,7 @@ to questions based on different scheduling strategies.
 """
 
 import logging
+import random
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -257,3 +258,120 @@ class DepthScheduler:
         logger.info(f"Uniform depth scheduling: {len(assignments)} total assignments")
         logger.info(f"  By depth: {depth_counts}")
         logger.info(f"  By context length: {length_counts}")
+
+
+def sample_questions_by_depth(
+    questions: List[Dict[str, Any]],
+    max_questions: int,
+    novel_length: int
+) -> List[Dict[str, Any]]:
+    """
+    Sample questions uniformly across depth bins.
+    
+    This function groups questions by their depth (based on position.end_pos
+    relative to novel_length) and samples uniformly from each depth bin
+    to ensure balanced coverage across different depths.
+    
+    Depth bins are: 0-20%, 20-40%, 40-60%, 60-80%, 80-100%
+    
+    Args:
+        questions: List of question dictionaries with position information
+        max_questions: Maximum number of questions to sample
+        novel_length: Total length of novel in tokens (for depth calculation)
+        
+    Returns:
+        Sampled list of questions with balanced depth distribution
+    """
+    if not questions or max_questions <= 0:
+        return []
+    
+    if max_questions >= len(questions):
+        return questions
+    
+    # Define depth bins (5 bins: 0-20%, 20-40%, 40-60%, 60-80%, 80-100%)
+    num_bins = 5
+    bin_boundaries = [i / num_bins for i in range(num_bins + 1)]
+    
+    # Group questions by depth bin
+    depth_bins: List[List[Dict[str, Any]]] = [[] for _ in range(num_bins)]
+    
+    for question in questions:
+        position = question.get("position", {})
+        end_pos = position.get("end_pos", 0)
+        
+        # Calculate depth as ratio of end_pos to novel_length
+        if novel_length > 0:
+            depth = end_pos / novel_length
+        else:
+            depth = 0.0
+        
+        # Clamp depth to [0, 1]
+        depth = max(0.0, min(1.0, depth))
+        
+        # Find the appropriate bin
+        bin_idx = min(int(depth * num_bins), num_bins - 1)
+        depth_bins[bin_idx].append(question)
+    
+    # Log bin distribution before sampling
+    bin_labels = ["0-20%", "20-40%", "40-60%", "60-80%", "80-100%"]
+    logger.info(f"Question distribution by depth before sampling:")
+    for i, (label, bin_questions) in enumerate(zip(bin_labels, depth_bins)):
+        logger.info(f"  {label}: {len(bin_questions)} questions")
+    
+    # Calculate samples per bin
+    # Try to distribute evenly, but handle bins with fewer questions
+    samples_per_bin = max_questions // num_bins
+    remaining_samples = max_questions % num_bins
+    
+    sampled_questions = []
+    extra_needed = 0
+    
+    # First pass: sample from each bin
+    for i, bin_questions in enumerate(depth_bins):
+        target_samples = samples_per_bin
+        if i < remaining_samples:
+            target_samples += 1
+        
+        if len(bin_questions) <= target_samples:
+            # Take all questions from this bin
+            sampled_questions.extend(bin_questions)
+            extra_needed += target_samples - len(bin_questions)
+        else:
+            # Random sample from this bin
+            sampled = random.sample(bin_questions, target_samples)
+            sampled_questions.extend(sampled)
+    
+    # Second pass: if some bins had fewer questions, sample extra from other bins
+    if extra_needed > 0:
+        # Collect remaining questions not yet sampled
+        sampled_set = set(id(q) for q in sampled_questions)
+        remaining_questions = [
+            q for q in questions if id(q) not in sampled_set
+        ]
+        
+        if remaining_questions:
+            extra_samples = min(extra_needed, len(remaining_questions))
+            extra = random.sample(remaining_questions, extra_samples)
+            sampled_questions.extend(extra)
+    
+    # Log final distribution
+    logger.info(f"Sampled {len(sampled_questions)} questions from {len(questions)} total")
+    
+    # Recalculate distribution after sampling
+    final_bins = [0] * num_bins
+    for question in sampled_questions:
+        position = question.get("position", {})
+        end_pos = position.get("end_pos", 0)
+        if novel_length > 0:
+            depth = end_pos / novel_length
+        else:
+            depth = 0.0
+        depth = max(0.0, min(1.0, depth))
+        bin_idx = min(int(depth * num_bins), num_bins - 1)
+        final_bins[bin_idx] += 1
+    
+    logger.info(f"Question distribution by depth after sampling:")
+    for label, count in zip(bin_labels, final_bins):
+        logger.info(f"  {label}: {count} questions")
+    
+    return sampled_questions

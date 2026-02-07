@@ -125,11 +125,20 @@ class ReportGenerator:
         """
         # Extract test configuration from metadata
         model_name = self.metadata.get("model_name", "Unknown")
-        context_length = self.metadata.get("context_length", "Unknown")
+        context_length = self.metadata.get("context_length")
         novel_path = self.metadata.get("novel_path", "Unknown")
         tested_at = self.metadata.get("tested_at", "Unknown")
         total_in_set = self.metadata.get("total_questions", "Unknown")
         tested_count = self.metadata.get("tested_questions", metrics["total_questions"])
+        test_mode = self.metadata.get("test_mode", "standard")
+        
+        # Format context length display
+        if context_length is not None:
+            context_length_display = f"{context_length:,} tokens"
+        elif test_mode == "no_reference":
+            context_length_display = "N/A (No-Reference Mode)"
+        else:
+            context_length_display = "Unknown"
         
         # Format metrics
         single_acc = metrics["single_choice_accuracy"] * 100
@@ -149,7 +158,7 @@ class ReportGenerator:
                 </div>
                 <div class="config-item">
                     <span class="config-label">Context Length:</span>
-                    <span class="config-value">{context_length:,} tokens</span>
+                    <span class="config-value">{context_length_display}</span>
                 </div>
                 <div class="config-item">
                     <span class="config-label">Novel:</span>

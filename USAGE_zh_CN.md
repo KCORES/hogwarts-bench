@@ -70,6 +70,7 @@ DEFAULT_MAX_TOKENS=2000
 DEFAULT_TIMEOUT=60
 DEFAULT_CONCURRENCY=5
 DEFAULT_RETRY_TIMES=3
+DEFAULT_RETRY_DELAY=5
 ```
 
 ## 使用方法
@@ -275,6 +276,7 @@ python -m src.test \
 | `--context_length` | 是 | - | 提供给 LLM 的总上下文长度（token 数） |
 | `--padding_size` | 否 | `500` | 缓冲 token 数，确保答案不被截断 |
 | `--concurrency` | 否 | `5` | 并发测试请求数 |
+| `--max-questions` | 否 | 全部 | 最大测试题目数量，按深度均匀采样 |
 | `--output` | 是 | - | 输出结果 JSONL 文件路径 |
 
 #### 上下文长度指南
@@ -427,10 +429,10 @@ python -m src.heatmap \
 # 均匀分布到各深度和上下文长度
 python -m src.test \
     --novel data/harry_potter_5.txt \
-    --data_set data/questions_validated.jsonl \
+    --data_set data/harry_potter_5_questions_512_context_512k_v2_validated.jsonl \
     --depth-mode uniform \
-    --context-lengths 64000,128000,200000 \
-    --output data/results_depth.jsonl
+    --context-lengths 4000,8000,16000,32000,64000,128000,192000,200000 \
+    --output report/results_depth.jsonl
 
 # 固定深度测试（例如，仅在 50% 深度测试）
 python -m src.test \
@@ -449,6 +451,7 @@ python -m src.test \
 | `--depth-mode` | 否 | `legacy` | 深度模式：`legacy`、`uniform` 或 `fixed` |
 | `--depth` | fixed 模式必需 | - | 固定深度值（0.0-1.0） |
 | `--context-lengths` | 深度模式必需 | - | 逗号分隔的上下文长度（如 64000,128000,200000） |
+| `--max-questions` | 否 | 全部 | 最大测试题目数量，按深度均匀采样 |
 
 #### 上下文长度验证
 
@@ -481,7 +484,201 @@ python -m src.test \
 }
 ```
 
-### 7. 生成深度热力图
+### 7. 恢复模式（Recovery Mode）
+
+当测试过程中因 API 欠费、网络超时或其他错误导致测试中断时，可以使用恢复模式重新运行失败的测试项目，而无需重新测试已成功的项目，从而节省 API 费用。
+
+#### 使用场景
+
+- API 欠费导致测试中断
+- 网络超时导致部分测试失败
+- 系统错误导致测试结果不完整
+- 需要重试之前失败的测试项目
+
+#### 基本用法
+
+```bash
+# 恢复深度感知测试
+python -m src.test \
+    --novel data/harry_potter_5.txt \
+    --data_set data/harry_potter_5_questions_512_context_512k_v2_validated.jsonl \
+    --depth-mode uniform \
+    --context-lengths 4000,8000,16000,32000,64000,128000,192000,256000 \
+    --recovery report/results-qwen3-max-thinking-depth-turn-1.jsonl \
+    --output report/results-qwen3-max-thinking-depth-turn-1-recovered.jsonl
+
+# 恢复传统模式测试
+python -m src.test \
+    --novel data/harry_potter_1.txt \
+    --data_set data/questions.jsonl \
+    --context_length 50000 \
+    --recovery data/results.jsonl \
+    --output data/results_recovered.jsonl
+
+# 恢复无参考模式测试
+python -m src.test \
+    --no-reference \
+    --data_set data/questions_with_summary.jsonl \
+    --recovery data/results_no_ref.jsonl \
+    --output data/results_no_ref_recovered.jsonl
+```
+
+#### 参数说明
+
+| 参数 | 必需 | 默认值 | 描述 |
+|------|------|--------|------|
+| `--recovery` | 否 | - | 上次测试结果文件路径，启用恢复模式 |
+
+其他参数与正常测试模式相同，需要保持一致以确保正确恢复。
+
+#### 恢复逻辑
+
+恢复模式会识别以下类型的失败结果并重新测试：
+- `parsing_status` 为 `error`（API 错误，如欠费）
+- `parsing_status` 为 `timeout`（请求超时）
+- `parsing_status` 为 `context_build_error`（上下文构建错误）
+- `parsing_status` 为 `parsing_error`（响应解析失败）
+
+以下状态的结果会被保留，不会重新测试：
+- `parsing_status` 为 `success`（成功解析）
+- `parsing_status` 为 `regex_extracted`（正则提取成功）
+
+#### 输出说明
+
+恢复模式会输出详细的恢复统计信息：
+
+```
+============================================================
+RECOVERY MODE - Depth-Aware Tests
+============================================================
+Loading previous results from: report/results.jsonl
+Loaded 369 previous results
+  Successful results (will keep): 350
+  Failed results (will re-run): 19
+  Failure breakdown:
+    Error: 15
+    Timeout: 4
+    Context build error: 0
+...
+Recovery results:
+  Successfully recovered: 18
+  Still failed: 1
+Final merged results: 369
+```
+
+#### 注意事项
+
+- 恢复模式需要使用与原始测试相同的参数（小说路径、问题集、上下文长度等）
+- 恢复后的结果文件会包含原始成功的结果和新恢复的结果
+- 如果某些测试仍然失败，可以多次运行恢复模式
+- 建议将恢复后的结果保存到新文件，以保留原始结果作为备份
+
+### 8. 无参考模式测试
+
+无参考模式用于测试大语言模型是否在训练过程中已经记忆了小说内容。在此模式下，测试时不提供小说原文作为上下文，仅使用小说摘要作为背景信息，直接向模型提问。
+
+#### 使用场景
+
+- 检测模型是否在预训练时已经学习了《哈利·波特》小说内容
+- 评估模型的"固有知识"与"上下文检索能力"的差异
+- 作为基准对比，了解模型在有/无参考情况下的表现差异
+
+#### 生成小说摘要
+
+在使用无参考模式之前，需要先为问题集生成小说摘要。有两种方式：
+
+**方式一：在生成问题时自动生成摘要**
+
+```bash
+python -m src.generate \
+    --novel data/harry_potter_1.txt \
+    --question_nums 200 \
+    --generate-summary \
+    --output data/questions.jsonl
+```
+
+**方式二：为已有问题集添加摘要**
+
+```bash
+python -m src.summary \
+    --novel data/harry_potter_1.txt \
+    --data_set data/questions.jsonl \
+    --output data/questions_with_summary.jsonl
+```
+
+#### 运行无参考测试
+
+```bash
+python -m src.test \
+    --no-reference \
+    --data_set data/questions_with_summary.jsonl \
+    --output data/results_no_ref.jsonl
+```
+
+#### 参数说明
+
+| 参数 | 必需 | 默认值 | 描述 |
+|------|------|--------|------|
+| `--no-reference` | 是 | - | 启用无参考测试模式 |
+| `--data_set` | 是 | - | 问题集 JSONL 文件路径（必须包含 `novel_summary` 元数据） |
+| `--output` | 是 | - | 输出结果 JSONL 文件路径 |
+| `--concurrency` | 否 | `5` | 并发测试请求数 |
+| `--max-questions` | 否 | 全部 | 最大测试题目数量，按深度均匀采样 |
+| `--skip-validation` | 否 | `false` | 跳过验证字段检查 |
+| `--ignore-invalid` | 否 | `false` | 跳过无效问题而非报错 |
+
+#### 注意事项
+
+- `--no-reference` 不能与 `--novel`、`--context_length`、`--context-lengths`、`--depth-mode` 等参数同时使用
+- 问题集必须包含 `novel_summary` 元数据字段，否则会报错
+- 无参考模式会测试所有问题，不会根据位置过滤
+
+#### 输出格式
+
+无参考测试结果包含 `test_mode` 字段：
+
+```json
+{
+  "question": "哈利使用了什么咒语？",
+  "question_type": "single_choice",
+  "choice": {"a": "除你武器", "b": "昏昏倒地", "c": "盔甲护身", "d": "呼神护卫"},
+  "correct_answer": ["a"],
+  "model_answer": ["a"],
+  "parsing_status": "success",
+  "position": {"start_pos": 12500, "end_pos": 12650},
+  "score": 1.0,
+  "metrics": {},
+  "test_mode": "no_reference"
+}
+```
+
+#### 摘要生成命令
+
+独立的摘要生成工具用于为已有问题集添加小说摘要：
+
+```bash
+# 基本用法
+python -m src.summary \
+    --novel data/harry_potter_1.txt \
+    --data_set data/questions.jsonl \
+    --output data/questions_with_summary.jsonl
+
+# 自定义摘要行数（默认 100 行）
+python -m src.summary \
+    --novel data/harry_potter_1.txt \
+    --data_set data/questions.jsonl \
+    --excerpt-lines 150 \
+    --output data/questions_with_summary.jsonl
+```
+
+| 参数 | 必需 | 默认值 | 描述 |
+|------|------|--------|------|
+| `--novel` | 是 | - | 小说文本文件路径 |
+| `--data_set` | 是 | - | 问题集 JSONL 文件路径 |
+| `--output` | 否 | 覆盖原文件 | 输出文件路径 |
+| `--excerpt-lines` | 否 | `100` | 用于生成摘要的小说行数 |
+
+### 9. 生成深度热力图
 
 生成二维热力图，展示不同上下文长度（X轴）和深度（Y轴）的准确率。
 
@@ -565,7 +762,7 @@ Hogwarts-bench 使用可定制的 JSON 提示词模板进行问题生成和测�
 - `prompts/question_generation.json`：问题生成模板
 - `prompts/testing.json`：LLM 测试模板
 
-#### 模板结构
+#### 模板结构 
 
 每个模板文件必须是有效的 JSON，具有以下结构：
 

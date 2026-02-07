@@ -19,7 +19,7 @@ from ..core.prompt_template import PromptTemplateManager
 from .parser import parse_answer
 from .question_checker import QuestionChecker, QuestionCheckError
 from .context_builder import ContextBuilder
-from .depth_scheduler import DepthScheduler, DepthMode, DepthAssignment
+from .depth_scheduler import DepthScheduler, DepthMode, DepthAssignment, sample_questions_by_depth
 
 
 # Configure logging
@@ -66,7 +66,8 @@ class TestingTool:
         concurrency: int = 5,
         output_path: Optional[str] = None,
         skip_validation: bool = False,
-        ignore_invalid: bool = False
+        ignore_invalid: bool = False,
+        max_questions: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
         Main entry point for testing.
@@ -77,8 +78,9 @@ class TestingTool:
         3. Pre-check questions for validation status
         4. Prepare context (first N tokens)
         5. Filter questions that fit in context
-        6. Execute tests concurrently
-        7. Save results to JSONL
+        6. Sample questions by depth if max_questions specified
+        7. Execute tests concurrently
+        8. Save results to JSONL
         
         Args:
             novel_path: Path to novel text file
@@ -89,6 +91,7 @@ class TestingTool:
             output_path: Optional path to save results (default: auto-generated)
             skip_validation: Skip validation field check entirely (default: False)
             ignore_invalid: Filter out invalid questions instead of erroring (default: False)
+            max_questions: Maximum number of questions to test (default: None, test all)
             
         Returns:
             List of test result dictionaries
@@ -99,12 +102,15 @@ class TestingTool:
         logger.info(f"Starting test run with context_length={context_length}")
         logger.info(f"Novel: {novel_path}")
         logger.info(f"Questions: {question_set_path}")
+        if max_questions:
+            logger.info(f"Max questions: {max_questions}")
         
         # Load novel and tokenize
         logger.info("Loading and tokenizing novel...")
         novel_text = self.file_io.read_novel(novel_path)
         novel_tokens = self.tokenizer.encode(novel_text)
-        logger.info(f"Novel loaded: {len(novel_tokens)} tokens")
+        novel_length = len(novel_tokens)
+        logger.info(f"Novel loaded: {novel_length} tokens")
         
         # Load question set
         logger.info("Loading question set...")
@@ -137,6 +143,15 @@ class TestingTool:
         if not filtered_questions:
             logger.warning("No questions passed filtering!")
             return []
+        
+        # Sample questions by depth if max_questions specified
+        if max_questions and max_questions < len(filtered_questions):
+            logger.info(f"Sampling {max_questions} questions by depth...")
+            filtered_questions = sample_questions_by_depth(
+                questions=filtered_questions,
+                max_questions=max_questions,
+                novel_length=novel_length
+            )
         
         # Execute tests concurrently
         logger.info(f"Executing tests (concurrency={concurrency})...")
@@ -266,6 +281,7 @@ class TestingTool:
                     "choice": question.get("choice", {}),
                     "correct_answer": question.get("answer", []),
                     "model_answer": [],
+                    "raw_answer": None,
                     "parsing_status": "error",
                     "position": question.get("position", {}),
                     "score": 0.0,
@@ -327,6 +343,7 @@ class TestingTool:
                 "choice": choices,
                 "correct_answer": correct_answer,
                 "model_answer": [],
+                "raw_answer": None,
                 "parsing_status": "timeout",
                 "position": position,
                 "score": 0.0,
@@ -348,6 +365,7 @@ class TestingTool:
             "choice": choices,
             "correct_answer": correct_answer,
             "model_answer": model_answer,
+            "raw_answer": response,
             "parsing_status": parsing_status,
             "position": position,
             "score": score,
@@ -607,7 +625,8 @@ class TestingTool:
         concurrency: int = 5,
         output_path: Optional[str] = None,
         skip_validation: bool = False,
-        ignore_invalid: bool = False
+        ignore_invalid: bool = False,
+        max_questions: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
         Execute depth-aware tests with evidence at different context depths.
@@ -627,6 +646,7 @@ class TestingTool:
             output_path: Optional path to save results
             skip_validation: Skip validation field check (default: False)
             ignore_invalid: Filter out invalid questions (default: False)
+            max_questions: Maximum number of questions to test (default: None, test all)
             
         Returns:
             List of test result dictionaries with depth information
@@ -635,6 +655,8 @@ class TestingTool:
         logger.info(f"  Mode: {depth_mode}")
         logger.info(f"  Context lengths: {context_lengths}")
         logger.info(f"  Fixed depth: {fixed_depth}")
+        if max_questions:
+            logger.info(f"  Max questions: {max_questions}")
         
         # Load novel and tokenize
         logger.info("Loading and tokenizing novel...")
@@ -668,6 +690,15 @@ class TestingTool:
         if not questions:
             logger.warning("No questions passed validation check!")
             return []
+        
+        # Sample questions by depth if max_questions specified
+        if max_questions and max_questions < len(questions):
+            logger.info(f"Sampling {max_questions} questions by depth...")
+            questions = sample_questions_by_depth(
+                questions=questions,
+                max_questions=max_questions,
+                novel_length=novel_length
+            )
         
         # Initialize depth scheduler
         mode = DepthMode(depth_mode)
@@ -775,6 +806,7 @@ class TestingTool:
                     "choice": question.get("choice", {}),
                     "correct_answer": question.get("answer", []),
                     "model_answer": [],
+                    "raw_answer": None,
                     "parsing_status": "error",
                     "position": question.get("position", {}),
                     "score": 0.0,
@@ -832,6 +864,7 @@ class TestingTool:
                 "choice": choices,
                 "correct_answer": correct_answer,
                 "model_answer": [],
+                "raw_answer": None,
                 "parsing_status": "context_build_error",
                 "position": position,
                 "score": 0.0,
@@ -864,6 +897,7 @@ class TestingTool:
                 "choice": choices,
                 "correct_answer": correct_answer,
                 "model_answer": [],
+                "raw_answer": None,
                 "parsing_status": "timeout",
                 "position": position,
                 "score": 0.0,
@@ -888,6 +922,7 @@ class TestingTool:
             "choice": choices,
             "correct_answer": correct_answer,
             "model_answer": model_answer,
+            "raw_answer": response,
             "parsing_status": parsing_status,
             "position": position,
             "score": score,
@@ -997,3 +1032,815 @@ class TestingTool:
         # Save to JSONL
         self.file_io.write_jsonl(output_path, results, metadata)
         logger.info(f"Depth-aware results saved to: {output_path}")
+
+    async def run_no_reference_tests(
+        self,
+        question_set_path: str,
+        concurrency: int = 5,
+        output_path: Optional[str] = None,
+        skip_validation: bool = False,
+        ignore_invalid: bool = False,
+        max_questions: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Execute no-reference tests without novel context.
+        
+        This method tests the LLM's inherent knowledge of the novel by
+        asking questions without providing the novel text as context.
+        Only the novel summary from metadata is used as background.
+        
+        Args:
+            question_set_path: Path to question set JSONL file
+            concurrency: Number of concurrent test requests (default: 5)
+            output_path: Optional path to save results
+            skip_validation: Skip validation field check (default: False)
+            ignore_invalid: Filter out invalid questions (default: False)
+            max_questions: Maximum number of questions to test (default: None, test all)
+            
+        Returns:
+            List of test result dictionaries
+            
+        Raises:
+            ValueError: If question set has no novel_summary in metadata
+        """
+        logger.info("Starting no-reference test run")
+        logger.info(f"  Question set: {question_set_path}")
+        if max_questions:
+            logger.info(f"  Max questions: {max_questions}")
+        
+        # Load question set
+        logger.info("Loading question set...")
+        metadata, questions = self.file_io.read_jsonl(question_set_path)
+        logger.info(f"Loaded {len(questions)} questions")
+        
+        # Check for novel_summary in metadata
+        novel_summary = metadata.get("novel_summary")
+        if not novel_summary:
+            raise ValueError(
+                "Question set has no 'novel_summary' in metadata. "
+                "Please run 'python -m src.summary --novel <novel_path> "
+                f"--data_set {question_set_path}' to generate a summary first."
+            )
+        
+        logger.info(f"Novel summary: {novel_summary[:100]}...")
+        
+        # Pre-check questions for validation status
+        logger.info("Pre-checking questions for validation status...")
+        questions, check_results = self.question_checker.check_questions(
+            questions=questions,
+            skip_validation=skip_validation,
+            ignore_invalid=ignore_invalid
+        )
+        
+        if not questions:
+            logger.warning("No questions passed validation check!")
+            return []
+        
+        # Sample questions by depth if max_questions specified
+        # For no-reference mode, we use a default novel_length estimate based on position data
+        if max_questions and max_questions < len(questions):
+            # Estimate novel length from max end_pos in questions
+            max_end_pos = max(
+                q.get("position", {}).get("end_pos", 0) for q in questions
+            )
+            # Add some buffer to estimate total novel length
+            estimated_novel_length = int(max_end_pos * 1.2) if max_end_pos > 0 else 100000
+            
+            logger.info(f"Sampling {max_questions} questions by depth...")
+            questions = sample_questions_by_depth(
+                questions=questions,
+                max_questions=max_questions,
+                novel_length=estimated_novel_length
+            )
+        
+        # Execute tests concurrently (no filtering by position)
+        logger.info(f"Executing no-reference tests (concurrency={concurrency})...")
+        results = await self._test_no_reference_batch(
+            questions=questions,
+            summary=novel_summary,
+            concurrency=concurrency
+        )
+        logger.info(f"Testing complete: {len(results)} results")
+        
+        # Calculate summary statistics
+        self._log_no_reference_summary(results)
+        
+        # Save results if output path provided
+        if output_path:
+            self._save_no_reference_results(
+                results=results,
+                output_path=output_path,
+                question_set_path=question_set_path,
+                novel_summary=novel_summary,
+                question_metadata=metadata
+            )
+        
+        return results
+    
+    async def _test_no_reference_batch(
+        self,
+        questions: List[Dict[str, Any]],
+        summary: str,
+        concurrency: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Execute no-reference tests concurrently.
+        
+        Args:
+            questions: List of questions
+            summary: Novel summary for context
+            concurrency: Maximum concurrent requests
+            
+        Returns:
+            List of test results
+        """
+        semaphore = asyncio.Semaphore(concurrency)
+        
+        async def test_with_semaphore(
+            question: Dict[str, Any],
+            idx: int
+        ) -> Dict[str, Any]:
+            async with semaphore:
+                logger.info(f"Testing question {idx + 1}/{len(questions)}")
+                return await self._test_single_no_reference(
+                    question=question,
+                    summary=summary
+                )
+        
+        tasks = [
+            test_with_semaphore(question, idx)
+            for idx, question in enumerate(questions)
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Handle exceptions
+        processed_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"Question {i + 1} failed with exception: {result}")
+                question = questions[i]
+                processed_results.append({
+                    "question": question.get("question", ""),
+                    "question_type": question.get("question_type", ""),
+                    "choice": question.get("choice", {}),
+                    "correct_answer": question.get("answer", []),
+                    "model_answer": [],
+                    "raw_answer": None,
+                    "parsing_status": "error",
+                    "position": question.get("position", {}),
+                    "score": 0.0,
+                    "metrics": {},
+                    "test_mode": "no_reference"
+                })
+            else:
+                processed_results.append(result)
+        
+        return processed_results
+    
+    async def _test_single_no_reference(
+        self,
+        question: Dict[str, Any],
+        summary: str
+    ) -> Dict[str, Any]:
+        """
+        Test one question in no-reference mode.
+        
+        Args:
+            question: Question dictionary
+            summary: Novel summary for context
+            
+        Returns:
+            Test result dictionary
+        """
+        # Extract question fields
+        question_text = question.get("question", "")
+        question_type = question.get("question_type", "")
+        choices = question.get("choice", {})
+        correct_answer = question.get("answer", [])
+        position = question.get("position", {})
+        
+        # Get no-reference testing prompt
+        system_prompt, user_prompt = self.prompt_manager.get_no_reference_testing_prompt(
+            summary=summary,
+            question=question_text,
+            choices=choices
+        )
+        
+        # Call LLM
+        response = await self.llm_client.generate(
+            prompt=user_prompt,
+            system_prompt=system_prompt
+        )
+        
+        # Handle None response
+        if response is None:
+            logger.warning(f"LLM returned None for question: {question_text[:50]}...")
+            return {
+                "question": question_text,
+                "question_type": question_type,
+                "choice": choices,
+                "correct_answer": correct_answer,
+                "model_answer": [],
+                "raw_answer": None,
+                "parsing_status": "timeout",
+                "position": position,
+                "score": 0.0,
+                "metrics": {},
+                "test_mode": "no_reference"
+            }
+        
+        # Parse answer
+        model_answer, parsing_status = parse_answer(response)
+        
+        # Calculate score and metrics
+        score, metrics = self._calculate_score(
+            correct_answer, model_answer, question_type
+        )
+        
+        # Build result
+        result = {
+            "question": question_text,
+            "question_type": question_type,
+            "choice": choices,
+            "correct_answer": correct_answer,
+            "model_answer": model_answer,
+            "raw_answer": response,
+            "parsing_status": parsing_status,
+            "position": position,
+            "score": score,
+            "metrics": metrics,
+            "test_mode": "no_reference"
+        }
+        
+        return result
+    
+    def _log_no_reference_summary(self, results: List[Dict[str, Any]]):
+        """
+        Log summary statistics for no-reference test results.
+        
+        Args:
+            results: List of test results
+        """
+        total = len(results)
+        if total == 0:
+            logger.info("No results to summarize")
+            return
+        
+        # Count by parsing status
+        success = sum(1 for r in results if r["parsing_status"] == "success")
+        regex_extracted = sum(1 for r in results if r["parsing_status"] == "regex_extracted")
+        parsing_error = sum(1 for r in results if r["parsing_status"] == "parsing_error")
+        timeout = sum(1 for r in results if r["parsing_status"] == "timeout")
+        error = sum(1 for r in results if r["parsing_status"] == "error")
+        
+        # Calculate average score
+        avg_score = sum(r["score"] for r in results) / total
+        
+        # Count by question type
+        single_choice = sum(1 for r in results if r["question_type"] == "single_choice")
+        multiple_choice = sum(1 for r in results if r["question_type"] == "multiple_choice")
+        
+        # Calculate accuracy for single choice
+        single_correct = sum(
+            1 for r in results 
+            if r["question_type"] == "single_choice" and r["score"] == 1.0
+        )
+        single_accuracy = single_correct / single_choice if single_choice > 0 else 0.0
+        
+        # Calculate average F1 for multiple choice
+        multi_f1_scores = [
+            r["score"] for r in results 
+            if r["question_type"] == "multiple_choice"
+        ]
+        avg_multi_f1 = sum(multi_f1_scores) / len(multi_f1_scores) if multi_f1_scores else 0.0
+        
+        logger.info("=" * 60)
+        logger.info("NO-REFERENCE TEST SUMMARY")
+        logger.info("=" * 60)
+        logger.info(f"Test mode: NO REFERENCE (testing model's inherent knowledge)")
+        logger.info(f"Total questions tested: {total}")
+        logger.info(f"  Single choice: {single_choice}")
+        logger.info(f"  Multiple choice: {multiple_choice}")
+        logger.info("")
+        logger.info(f"Parsing status:")
+        logger.info(f"  Success: {success}")
+        logger.info(f"  Regex extracted: {regex_extracted}")
+        logger.info(f"  Parsing error: {parsing_error}")
+        logger.info(f"  Timeout: {timeout}")
+        logger.info(f"  Error: {error}")
+        logger.info("")
+        logger.info(f"Overall average score: {avg_score:.4f}")
+        if single_choice > 0:
+            logger.info(f"Single choice accuracy: {single_accuracy:.4f} ({single_correct}/{single_choice})")
+        if multiple_choice > 0:
+            logger.info(f"Multiple choice avg F1: {avg_multi_f1:.4f}")
+        logger.info("=" * 60)
+    
+    def _save_no_reference_results(
+        self,
+        results: List[Dict[str, Any]],
+        output_path: str,
+        question_set_path: str,
+        novel_summary: str,
+        question_metadata: Dict[str, Any]
+    ):
+        """
+        Save no-reference test results to JSONL file with metadata.
+        
+        Args:
+            results: List of test results
+            output_path: Path to save results
+            question_set_path: Path to question set
+            novel_summary: Novel summary used
+            question_metadata: Metadata from question set
+        """
+        # Build metadata (no context-related fields)
+        metadata = {
+            "tested_at": datetime.now().isoformat(),
+            "model_name": self.config.get("model_name", "unknown"),
+            "test_mode": "no_reference",
+            "question_set_path": question_set_path,
+            "novel_summary": novel_summary,
+            "total_questions": len(results),
+            "tested_questions": len(results),
+            "config": self.config,
+            "question_set_metadata": question_metadata
+        }
+        
+        # Save to JSONL
+        self.file_io.write_jsonl(output_path, results, metadata)
+        logger.info(f"No-reference results saved to: {output_path}")
+
+    # ==================== Recovery Mode Methods ====================
+    
+    def _is_result_failed(self, result: Dict[str, Any]) -> bool:
+        """
+        Check if a test result should be re-run in recovery mode.
+        
+        A result is considered failed if:
+        - parsing_status is "error", "timeout", "context_build_error", or "parsing_error"
+        
+        Args:
+            result: Test result dictionary
+            
+        Returns:
+            True if the result should be re-run
+        """
+        status = result.get("parsing_status", "")
+        # These statuses indicate failures that should be retried
+        if status in ["error", "timeout", "context_build_error", "parsing_error"]:
+            return True
+        return False
+    
+    def _build_result_key(self, result: Dict[str, Any]) -> str:
+        """
+        Build a unique key for a test result to match with questions.
+        
+        For depth-aware tests, the key includes question + depth_bin + context_length.
+        For legacy/no-reference tests, the key is just the question text.
+        
+        Args:
+            result: Test result dictionary
+            
+        Returns:
+            Unique key string
+        """
+        question = result.get("question", "")
+        depth_bin = result.get("depth_bin", "")
+        context_length = result.get("test_context_length", 0)
+        
+        if depth_bin and context_length:
+            # Depth-aware test
+            return f"{question}|{depth_bin}|{context_length}"
+        else:
+            # Legacy or no-reference test
+            return question
+    
+    async def run_depth_aware_recovery(
+        self,
+        recovery_path: str,
+        novel_path: str,
+        question_set_path: str,
+        depth_mode: str,
+        context_lengths: List[int],
+        fixed_depth: Optional[float] = None,
+        padding_size: int = 500,
+        concurrency: int = 5,
+        output_path: Optional[str] = None,
+        skip_validation: bool = False,
+        ignore_invalid: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Recovery mode for depth-aware tests.
+        
+        Loads previous results, identifies failed/error/missing tests,
+        re-runs only those tests, and merges with successful results.
+        
+        Args:
+            recovery_path: Path to previous results file
+            novel_path: Path to novel text file
+            question_set_path: Path to question set JSONL file
+            depth_mode: Depth scheduling mode
+            context_lengths: List of context lengths to test
+            fixed_depth: Depth value for "fixed" mode
+            padding_size: Buffer tokens around evidence
+            concurrency: Number of concurrent test requests
+            output_path: Optional path to save results
+            skip_validation: Skip validation field check
+            ignore_invalid: Filter out invalid questions
+            
+        Returns:
+            List of merged test results
+        """
+        logger.info("=" * 60)
+        logger.info("RECOVERY MODE - Depth-Aware Tests")
+        logger.info("=" * 60)
+        logger.info(f"Loading previous results from: {recovery_path}")
+        
+        # Load previous results
+        prev_metadata, prev_results = self.file_io.read_jsonl(recovery_path)
+        logger.info(f"Loaded {len(prev_results)} previous results")
+        
+        # Identify failed results
+        failed_results = [r for r in prev_results if self._is_result_failed(r)]
+        successful_results = [r for r in prev_results if not self._is_result_failed(r)]
+        
+        logger.info(f"  Successful results (will keep): {len(successful_results)}")
+        logger.info(f"  Failed results (will re-run): {len(failed_results)}")
+        
+        # Count failure types
+        error_count = sum(1 for r in failed_results if r.get("parsing_status") == "error")
+        timeout_count = sum(1 for r in failed_results if r.get("parsing_status") == "timeout")
+        context_error_count = sum(1 for r in failed_results if r.get("parsing_status") == "context_build_error")
+        
+        logger.info(f"  Failure breakdown:")
+        logger.info(f"    Error: {error_count}")
+        logger.info(f"    Timeout: {timeout_count}")
+        logger.info(f"    Context build error: {context_error_count}")
+        
+        if not failed_results:
+            logger.info("No failed results to recover. All tests passed!")
+            # Still save to output if specified
+            if output_path:
+                self._save_depth_aware_results(
+                    results=prev_results,
+                    output_path=output_path,
+                    novel_path=novel_path,
+                    question_set_path=question_set_path,
+                    depth_mode=depth_mode,
+                    context_lengths=context_lengths,
+                    fixed_depth=fixed_depth,
+                    padding_size=padding_size,
+                    question_metadata=prev_metadata.get("question_set_metadata", {})
+                )
+            return prev_results
+        
+        # Load novel and tokenize
+        logger.info("Loading and tokenizing novel...")
+        novel_text = self.file_io.read_novel(novel_path)
+        novel_tokens = self.tokenizer.encode(novel_text)
+        logger.info(f"Novel loaded: {len(novel_tokens)} tokens")
+        
+        # Load question set
+        logger.info("Loading question set...")
+        metadata, questions = self.file_io.read_jsonl(question_set_path)
+        
+        # Pre-check questions
+        questions, _ = self.question_checker.check_questions(
+            questions=questions,
+            skip_validation=skip_validation,
+            ignore_invalid=ignore_invalid
+        )
+        
+        # Build question lookup by question text
+        question_lookup = {q.get("question", ""): q for q in questions}
+        
+        # Initialize context builder
+        context_builder = ContextBuilder(self.tokenizer, novel_tokens)
+        
+        # Build assignments for failed results only
+        failed_assignments = []
+        for result in failed_results:
+            question_text = result.get("question", "")
+            question = question_lookup.get(question_text)
+            
+            if not question:
+                logger.warning(f"Question not found in dataset: {question_text[:50]}...")
+                continue
+            
+            # Find question index
+            question_idx = next(
+                (i for i, q in enumerate(questions) if q.get("question") == question_text),
+                -1
+            )
+            
+            if question_idx < 0:
+                continue
+            
+            # Create assignment from previous result
+            assignment = DepthAssignment(
+                question_index=question_idx,
+                target_depth=result.get("depth", 0.5),
+                depth_bin=result.get("depth_bin", "50%"),
+                context_length=result.get("test_context_length", context_lengths[0])
+            )
+            failed_assignments.append(assignment)
+        
+        logger.info(f"Created {len(failed_assignments)} recovery assignments")
+        
+        # Re-run failed tests
+        logger.info(f"Re-running failed tests (concurrency={concurrency})...")
+        recovery_results = await self._test_depth_aware_batch(
+            questions=questions,
+            assignments=failed_assignments,
+            context_builder=context_builder,
+            padding_size=padding_size,
+            concurrency=concurrency
+        )
+        
+        # Count recovery success
+        recovered_success = sum(1 for r in recovery_results if not self._is_result_failed(r))
+        still_failed = len(recovery_results) - recovered_success
+        
+        logger.info(f"Recovery results:")
+        logger.info(f"  Successfully recovered: {recovered_success}")
+        logger.info(f"  Still failed: {still_failed}")
+        
+        # Merge results: keep successful + add recovery results
+        # Build lookup for recovery results
+        recovery_lookup = {}
+        for r in recovery_results:
+            key = self._build_result_key(r)
+            recovery_lookup[key] = r
+        
+        # Build final results maintaining original order
+        final_results = []
+        for result in prev_results:
+            key = self._build_result_key(result)
+            if key in recovery_lookup:
+                # Use recovery result
+                final_results.append(recovery_lookup[key])
+            else:
+                # Keep original result
+                final_results.append(result)
+        
+        logger.info(f"Final merged results: {len(final_results)}")
+        
+        # Log summary
+        self._log_depth_aware_summary(final_results)
+        
+        # Save results
+        if output_path:
+            # Update metadata to indicate recovery
+            updated_metadata = prev_metadata.copy()
+            updated_metadata["recovery_mode"] = True
+            updated_metadata["recovery_from"] = recovery_path
+            updated_metadata["recovered_at"] = datetime.now().isoformat()
+            updated_metadata["recovered_count"] = recovered_success
+            updated_metadata["still_failed_count"] = still_failed
+            
+            self._save_depth_aware_results(
+                results=final_results,
+                output_path=output_path,
+                novel_path=novel_path,
+                question_set_path=question_set_path,
+                depth_mode=depth_mode,
+                context_lengths=context_lengths,
+                fixed_depth=fixed_depth,
+                padding_size=padding_size,
+                question_metadata=metadata
+            )
+        
+        return final_results
+    
+    async def run_recovery(
+        self,
+        recovery_path: str,
+        novel_path: str,
+        question_set_path: str,
+        context_length: int,
+        padding_size: int = 500,
+        concurrency: int = 5,
+        output_path: Optional[str] = None,
+        skip_validation: bool = False,
+        ignore_invalid: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Recovery mode for legacy tests.
+        
+        Args:
+            recovery_path: Path to previous results file
+            novel_path: Path to novel text file
+            question_set_path: Path to question set JSONL file
+            context_length: Number of tokens to use as context
+            padding_size: Buffer tokens
+            concurrency: Number of concurrent test requests
+            output_path: Optional path to save results
+            skip_validation: Skip validation field check
+            ignore_invalid: Filter out invalid questions
+            
+        Returns:
+            List of merged test results
+        """
+        logger.info("=" * 60)
+        logger.info("RECOVERY MODE - Legacy Tests")
+        logger.info("=" * 60)
+        logger.info(f"Loading previous results from: {recovery_path}")
+        
+        # Load previous results
+        prev_metadata, prev_results = self.file_io.read_jsonl(recovery_path)
+        logger.info(f"Loaded {len(prev_results)} previous results")
+        
+        # Identify failed results
+        failed_results = [r for r in prev_results if self._is_result_failed(r)]
+        successful_results = [r for r in prev_results if not self._is_result_failed(r)]
+        
+        logger.info(f"  Successful results (will keep): {len(successful_results)}")
+        logger.info(f"  Failed results (will re-run): {len(failed_results)}")
+        
+        if not failed_results:
+            logger.info("No failed results to recover. All tests passed!")
+            if output_path:
+                self._save_results(
+                    results=prev_results,
+                    output_path=output_path,
+                    novel_path=novel_path,
+                    question_set_path=question_set_path,
+                    context_length=context_length,
+                    padding_size=padding_size,
+                    question_metadata=prev_metadata.get("question_set_metadata", {})
+                )
+            return prev_results
+        
+        # Load novel and prepare context
+        logger.info("Loading and tokenizing novel...")
+        novel_text = self.file_io.read_novel(novel_path)
+        novel_tokens = self.tokenizer.encode(novel_text)
+        context = self._prepare_context(novel_tokens, context_length)
+        
+        # Load question set
+        logger.info("Loading question set...")
+        metadata, questions = self.file_io.read_jsonl(question_set_path)
+        
+        # Pre-check questions
+        questions, _ = self.question_checker.check_questions(
+            questions=questions,
+            skip_validation=skip_validation,
+            ignore_invalid=ignore_invalid
+        )
+        
+        # Build question lookup
+        question_lookup = {q.get("question", ""): q for q in questions}
+        
+        # Get questions to re-test
+        questions_to_retest = []
+        for result in failed_results:
+            question_text = result.get("question", "")
+            question = question_lookup.get(question_text)
+            if question:
+                questions_to_retest.append(question)
+        
+        logger.info(f"Re-running {len(questions_to_retest)} failed tests...")
+        
+        # Re-run failed tests
+        recovery_results = await self._test_batch(
+            context=context,
+            questions=questions_to_retest,
+            concurrency=concurrency
+        )
+        
+        # Build recovery lookup
+        recovery_lookup = {r.get("question", ""): r for r in recovery_results}
+        
+        # Merge results
+        final_results = []
+        for result in prev_results:
+            question_text = result.get("question", "")
+            if question_text in recovery_lookup:
+                final_results.append(recovery_lookup[question_text])
+            else:
+                final_results.append(result)
+        
+        # Log summary
+        self._log_summary(final_results)
+        
+        # Save results
+        if output_path:
+            self._save_results(
+                results=final_results,
+                output_path=output_path,
+                novel_path=novel_path,
+                question_set_path=question_set_path,
+                context_length=context_length,
+                padding_size=padding_size,
+                question_metadata=metadata
+            )
+        
+        return final_results
+    
+    async def run_no_reference_recovery(
+        self,
+        recovery_path: str,
+        question_set_path: str,
+        concurrency: int = 5,
+        output_path: Optional[str] = None,
+        skip_validation: bool = False,
+        ignore_invalid: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Recovery mode for no-reference tests.
+        
+        Args:
+            recovery_path: Path to previous results file
+            question_set_path: Path to question set JSONL file
+            concurrency: Number of concurrent test requests
+            output_path: Optional path to save results
+            skip_validation: Skip validation field check
+            ignore_invalid: Filter out invalid questions
+            
+        Returns:
+            List of merged test results
+        """
+        logger.info("=" * 60)
+        logger.info("RECOVERY MODE - No-Reference Tests")
+        logger.info("=" * 60)
+        logger.info(f"Loading previous results from: {recovery_path}")
+        
+        # Load previous results
+        prev_metadata, prev_results = self.file_io.read_jsonl(recovery_path)
+        logger.info(f"Loaded {len(prev_results)} previous results")
+        
+        # Identify failed results
+        failed_results = [r for r in prev_results if self._is_result_failed(r)]
+        
+        logger.info(f"  Successful results (will keep): {len(prev_results) - len(failed_results)}")
+        logger.info(f"  Failed results (will re-run): {len(failed_results)}")
+        
+        if not failed_results:
+            logger.info("No failed results to recover. All tests passed!")
+            if output_path:
+                self.file_io.write_jsonl(output_path, prev_results, prev_metadata)
+            return prev_results
+        
+        # Load question set
+        logger.info("Loading question set...")
+        metadata, questions = self.file_io.read_jsonl(question_set_path)
+        
+        novel_summary = metadata.get("novel_summary")
+        if not novel_summary:
+            raise ValueError("Question set has no 'novel_summary' in metadata.")
+        
+        # Pre-check questions
+        questions, _ = self.question_checker.check_questions(
+            questions=questions,
+            skip_validation=skip_validation,
+            ignore_invalid=ignore_invalid
+        )
+        
+        # Build question lookup
+        question_lookup = {q.get("question", ""): q for q in questions}
+        
+        # Get questions to re-test
+        questions_to_retest = []
+        for result in failed_results:
+            question_text = result.get("question", "")
+            question = question_lookup.get(question_text)
+            if question:
+                questions_to_retest.append(question)
+        
+        logger.info(f"Re-running {len(questions_to_retest)} failed tests...")
+        
+        # Re-run failed tests
+        recovery_results = await self._test_no_reference_batch(
+            questions=questions_to_retest,
+            summary=novel_summary,
+            concurrency=concurrency
+        )
+        
+        # Build recovery lookup
+        recovery_lookup = {r.get("question", ""): r for r in recovery_results}
+        
+        # Merge results
+        final_results = []
+        for result in prev_results:
+            question_text = result.get("question", "")
+            if question_text in recovery_lookup:
+                final_results.append(recovery_lookup[question_text])
+            else:
+                final_results.append(result)
+        
+        # Log summary
+        self._log_no_reference_summary(final_results)
+        
+        # Save results
+        if output_path:
+            self._save_no_reference_results(
+                results=final_results,
+                output_path=output_path,
+                question_set_path=question_set_path,
+                novel_summary=novel_summary,
+                question_metadata=metadata
+            )
+        
+        return final_results

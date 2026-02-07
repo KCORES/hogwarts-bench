@@ -28,12 +28,22 @@ class LLMClient:
                 - top_k: Top-k sampling parameter
                 - max_tokens: Maximum response tokens
                 - timeout: Request timeout in seconds
+                - user_agent: Custom User-Agent header (optional)
+                - enable_thinking: Enable thinking/reasoning output (optional)
         """
         self.config = config
+        
+        # Build default headers if user_agent is specified
+        default_headers = None
+        user_agent = config.get("user_agent", "")
+        if user_agent:
+            default_headers = {"User-Agent": user_agent}
+        
         self.client = AsyncOpenAI(
             api_key=config["api_key"],
             base_url=config["base_url"],
-            timeout=config["timeout"]
+            timeout=config["timeout"],
+            default_headers=default_headers,
         )
         self.model_name = config["model_name"]
         self.temperature = config["temperature"]
@@ -41,6 +51,9 @@ class LLMClient:
         self.top_k = config.get("top_k", 0)
         self.max_tokens = config["max_tokens"]
         self.timeout = config["timeout"]
+        self.enable_thinking = config.get("enable_thinking", False)
+        self.thinking_style = config.get("thinking_style", "openai")
+        self.interactive_retry = config.get("interactive_retry", False)
     
     async def generate(
         self, 
@@ -132,12 +145,35 @@ class LLMClient:
             if self.top_p < 1.0:
                 request_params["top_p"] = self.top_p
             
-            # Add top_k via extra_body if set (non-standard OpenAI parameter)
+            # Build extra_body for non-standard parameters
+            extra_body = {}
+            
+            # Add top_k if set (non-standard OpenAI parameter)
             if self.top_k > 0:
-                request_params["extra_body"] = {"top_k": self.top_k}
+                extra_body["top_k"] = self.top_k
+            
+            # Add thinking parameter based on style
+            if self.enable_thinking:
+                if self.thinking_style == "kimi":
+                    extra_body["thinking"] = {"type": "enabled"}
+                else:  # openai style (default)
+                    extra_body["enable_thinking"] = True
+            
+            if extra_body:
+                request_params["extra_body"] = extra_body
             
             response = await self.client.chat.completions.create(**request_params)
-            return response.choices[0].message.content
+            
+            # Extract response content
+            message = response.choices[0].message
+            content = message.content or ""
+            
+            # Check for reasoning_content (Kimi thinking output)
+            reasoning_content = getattr(message, "reasoning_content", None)
+            if reasoning_content and self.enable_thinking:
+                return f"<thinking>\n{reasoning_content}\n</thinking>\n\n{content}"
+            
+            return content
         except APITimeoutError as e:
             logger.error(f"Request timeout: {e}")
             raise
@@ -169,49 +205,76 @@ class LLMClient:
         """
         base_delay = 1  # Initial delay in seconds
         
-        for attempt in range(max_retries):
-            try:
-                result = await func(messages)
-                if attempt > 0:
-                    logger.info(f"Request succeeded on attempt {attempt + 1}")
-                return result
-            
-            except RateLimitError as e:
-                if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)
-                    logger.warning(
-                        f"Rate limit hit, retrying in {delay}s "
-                        f"(attempt {attempt + 1}/{max_retries})"
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    logger.error(
-                        f"Rate limit error persisted after {max_retries} attempts: {e}"
-                    )
+        while True:
+            for attempt in range(max_retries):
+                try:
+                    result = await func(messages)
+                    if attempt > 0:
+                        logger.info(f"Request succeeded on attempt {attempt + 1}")
+                    return result
+                
+                except RateLimitError as e:
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(
+                            f"Rate limit hit, retrying in {delay}s "
+                            f"(attempt {attempt + 1}/{max_retries})"
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(
+                            f"Rate limit error persisted after {max_retries} attempts: {e}"
+                        )
+                        last_error = e
+                
+                except (APITimeoutError, APIConnectionError) as e:
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(
+                            f"Network error, retrying in {delay}s "
+                            f"(attempt {attempt + 1}/{max_retries}): {e}"
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(
+                            f"Network error persisted after {max_retries} attempts: {e}"
+                        )
+                        last_error = e
+                
+                except OpenAIError as e:
+                    # For other API errors, don't retry
+                    logger.error(f"Non-retryable API error: {e}")
+                    return None
+                
+                except Exception as e:
+                    # Unexpected errors
+                    logger.error(f"Unexpected error: {e}")
                     return None
             
-            except (APITimeoutError, APIConnectionError) as e:
-                if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)
-                    logger.warning(
-                        f"Network error, retrying in {delay}s "
-                        f"(attempt {attempt + 1}/{max_retries}): {e}"
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    logger.error(
-                        f"Network error persisted after {max_retries} attempts: {e}"
-                    )
-                    return None
+            # All retries exhausted, check for interactive retry
+            if self.interactive_retry:
+                if await self._prompt_interactive_retry(last_error):
+                    logger.info("User requested retry, restarting retry cycle...")
+                    continue
             
-            except OpenAIError as e:
-                # For other API errors, don't retry
-                logger.error(f"Non-retryable API error: {e}")
-                return None
-            
-            except Exception as e:
-                # Unexpected errors
-                logger.error(f"Unexpected error: {e}")
-                return None
+            return None
+    
+    async def _prompt_interactive_retry(self, error: Exception) -> bool:
+        """Prompt user for interactive retry decision.
         
-        return None
+        Args:
+            error: The last error that occurred
+            
+        Returns:
+            True if user wants to retry, False otherwise
+        """
+        print(f"\n⚠️  重试次数已用尽，最后错误: {error}")
+        print("是否重新尝试? (y/n): ", end="", flush=True)
+        
+        # Run input in executor to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        try:
+            user_input = await loop.run_in_executor(None, input)
+            return user_input.strip().lower() in ("y", "yes")
+        except (EOFError, KeyboardInterrupt):
+            return False

@@ -108,6 +108,98 @@ class TestParseAnswer:
         assert answer == ["a", "b"]
         assert status == "regex_extracted"
 
+    def test_thinking_tags_with_json_examples(self):
+        """Test extraction when thinking block contains JSON examples."""
+        response = '''<thinking>
+1. **分析用户请求：**
+    *   **输出格式：** 仅 JSON。
+    *   要求的 JSON 格式：`{"answer": ["x"]}`。
+</thinking>
+
+{"answer": ["b"]}'''
+        answer, status = parse_answer(response)
+        assert answer == ["b"]
+        assert status == "regex_extracted"
+
+    def test_thinking_tags_with_multiple_json_examples(self):
+        """Test extraction when thinking block contains multiple JSON examples."""
+        response = '''<thinking>
+Let me analyze this:
+- Example format: {"answer": ["a"]}
+- Another example: {"result": "test"}
+- The correct format should be: {"answer": ["wrong"]}
+</thinking>
+
+```json
+{"answer": ["c"]}
+```'''
+        answer, status = parse_answer(response)
+        assert answer == ["c"]
+        assert status == "regex_extracted"
+
+    def test_glm_x_preview_style_response(self):
+        """Test parsing GLM-X-Preview style response with detailed thinking."""
+        response = '''<thinking>
+1. **分析用户请求：**
+    *   **角色：** 专业的阅读理解专家。
+    *   **任务：** 阅读提供的文本并根据该文本准确回答特定问题。
+    *   **限制：** 不要编造信息。答案必须*仅*基于文本。
+
+2. **扫描文本寻找关键词：**
+    *   关键词："小天狼星"、"克利切"、"自由"、"放"。
+
+3. **定位相关片段：**
+    *   找到片段："我们不能放他自由，他对凤凰社的事情知道得太多了。"
+
+4. **格式化输出：**
+    *   要求的 JSON 格式：`{"answer": ["b"]}`。
+</thinking>
+
+{"answer": ["b"]}'''
+        answer, status = parse_answer(response)
+        assert answer == ["b"]
+        assert status == "regex_extracted"
+
+    def test_response_with_code_block_json(self):
+        """Test extraction when final answer is in markdown code block."""
+        response = '''Some thinking here with {"example": "data"}
+
+```json
+{"answer": ["d"]}
+```'''
+        answer, status = parse_answer(response)
+        assert answer == ["d"]
+        assert status == "regex_extracted"
+
+    def test_multiple_json_objects_returns_last(self):
+        """Test that the last valid JSON object is returned."""
+        response = '''{"answer": ["a"]} some text {"answer": ["b"]} more text {"answer": ["c"]}'''
+        answer, status = parse_answer(response)
+        assert answer == ["c"]
+        assert status == "regex_extracted"
+
+    def test_invalid_json_in_middle_valid_at_end(self):
+        """Test that invalid JSON in middle doesn't break parsing."""
+        response = '''{"broken": json here} and then {"answer": ["d"]}'''
+        answer, status = parse_answer(response)
+        assert answer == ["d"]
+        assert status == "regex_extracted"
+
+    def test_json_with_escaped_quotes(self):
+        """Test JSON parsing with escaped quotes in strings."""
+        response = '''{"note": "some \\"quoted\\" text", "answer": ["a"]}'''
+        answer, status = parse_answer(response)
+        assert answer == ["a"]
+        # Pure JSON is parsed directly with "success" status
+        assert status == "success"
+
+    def test_json_with_escaped_quotes_in_text(self):
+        """Test JSON with escaped quotes embedded in text."""
+        response = '''Some prefix {"note": "some \\"quoted\\" text", "answer": ["a"]} suffix'''
+        answer, status = parse_answer(response)
+        assert answer == ["a"]
+        assert status == "regex_extracted"
+
 
 class TestIsValidAnswer:
     """Test cases for is_valid_answer function."""

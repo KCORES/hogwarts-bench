@@ -32,11 +32,16 @@ class Config:
             "top_p": float(os.getenv("DEFAULT_TOP_P", "1.0")),
             "top_k": int(os.getenv("DEFAULT_TOP_K", "0")),
             "max_tokens": int(os.getenv("DEFAULT_MAX_TOKENS", "2000")),
-            "timeout": int(os.getenv("DEFAULT_TIMEOUT", "60")),
+            "timeout": int(os.getenv("DEFAULT_TIMEOUT", "300")),
+            "user_agent": os.getenv("USER_AGENT", ""),
+            "enable_thinking": os.getenv("ENABLE_THINKING", "").lower() in ("true", "1", "yes"),
+            "thinking_style": os.getenv("THINKING_STYLE", "openai").lower(),  # openai, kimi
             
             # Concurrency Settings
             "default_concurrency": int(os.getenv("DEFAULT_CONCURRENCY", "5")),
             "default_retry_times": int(os.getenv("DEFAULT_RETRY_TIMES", "3")),
+            "default_retry_delay": int(os.getenv("DEFAULT_RETRY_DELAY", "5")),
+            "interactive_retry": os.getenv("INTERACTIVE_RETRY", "").lower() in ("true", "1", "yes"),
         }
         
         return config
@@ -97,4 +102,8 @@ class Config:
             "top_k": config["top_k"],
             "max_tokens": config["max_tokens"],
             "timeout": config["timeout"],
+            "user_agent": config.get("user_agent", ""),
+            "enable_thinking": config.get("enable_thinking", False),
+            "thinking_style": config.get("thinking_style", "openai"),
+            "interactive_retry": config.get("interactive_retry", False),
         }

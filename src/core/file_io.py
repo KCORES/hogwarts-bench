@@ -53,7 +53,7 @@ class FileIO:
             with open(path, 'w', encoding='utf-8') as f:
                 # Write metadata as first line if provided
                 if metadata:
-                    f.write(json.dumps({"metadata": metadata}) + '\n')
+                    f.write(json.dumps({"metadata": metadata}, ensure_ascii=False) + '\n')
                 
                 # Write each data item as a JSON line
                 for item in data:

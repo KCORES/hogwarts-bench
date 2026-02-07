@@ -783,6 +783,34 @@ def create_combined_heatmap(
     fig.update_yaxes(showticklabels=False, row=1, col=1)
     fig.update_yaxes(showticklabels=False, row=2, col=1)
     
+    # Calculate overall average accuracy
+    total_correct = 0
+    total_questions = 0
+    for b in accuracy_bins:
+        if b.accuracy is not None and b.question_count > 0:
+            total_correct += b.accuracy * b.question_count
+            total_questions += b.question_count
+    
+    avg_accuracy = total_correct / total_questions if total_questions > 0 else 0.0
+    
+    # Add average accuracy annotation in bottom left
+    fig.add_annotation(
+        text=f"<b>Average Accuracy: {avg_accuracy:.2%}</b>",
+        xref="paper",
+        yref="paper",
+        x=0.01,
+        y=0.01,
+        showarrow=False,
+        font=dict(size=14, color='#333333'),
+        align='left',
+        xanchor='left',
+        yanchor='bottom',
+        bgcolor='rgba(255, 255, 255, 0.8)',
+        bordercolor='#cccccc',
+        borderwidth=1,
+        borderpad=6
+    )
+    
     # Add branding (logo)
     _add_branding(fig, height=500, width=1200)
     

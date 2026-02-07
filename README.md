@@ -25,6 +25,28 @@ Hogwarts-bench 是一个"大海捞针"风格的基准测试工具, 系统性地�
 [中文](./USAGE_zh_CN.md)  
 [English](./USAGE_en_US.md)  
 
+### 快速开始
+
+使用验证过的数据集并且上下文分布在4K-200K,进行测试:
+
+```
+python -m src.test \
+    --novel data/harry_potter_5.txt \
+    --data_set data/harry_potter_5_questions_512_context_512k_v2_validated.jsonl \
+    --depth-mode uniform \
+    --context-lengths 4000,8000,16000,32000,64000,128000,192000,25600 \
+    --output report/results_depth.jsonl
+```
+
+生成 report:
+
+```
+python -m src.heatmap \
+    --mode depth \
+    --questions data/harry_potter_5_questions_512_context_512k_v2_validated.jsonl \
+    --results report/results_depth.jsonl \
+    --output report/combined.html
+```
 
 ### License
 
